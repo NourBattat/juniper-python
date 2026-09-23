@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 from netmiko import ConnectHandler
 
 
@@ -9,19 +9,16 @@ from netmiko import ConnectHandler
 
 switches = [
     {
-        "hostname": "switch-1",
         "ip": "192.168.1.1"
     },
 
     {
-        "hostname": "switch-2",
         "ip": "192.168.1.2"
     },
 
     # Add more switches later:
     #
     # {
-    #     "hostname": "switch-3",
     #     "ip": "192.168.1.3"
     # }
 ]
@@ -32,19 +29,23 @@ switches = [
 # ============================================================
 
 connection = None
-
 current_switch = None
 
 
 # ============================================================
-# Generate Password
+# Generate Switch Name
 # ============================================================
 
-def generate_password(ip):
+def generate_switch_name(ip):
+
+    prefix = prefix_entry.get().strip()
+
+    if prefix == "":
+        prefix = "switch-"
 
     last_part = ip.split(".")[-1]
 
-    return "switch-" + last_part
+    return prefix + last_part
 
 
 # ============================================================
@@ -60,10 +61,38 @@ def get_selected_switch():
 
     for switch in switches:
 
-        if selected == switch["hostname"]:
+        switch_name = generate_switch_name(
+            switch["ip"]
+        )
+
+        if selected == switch_name:
             return switch
 
     return None
+
+
+# ============================================================
+# Update Switch Names in ComboBox
+# ============================================================
+
+def update_switch_names():
+
+    names = []
+
+    for switch in switches:
+
+        name = generate_switch_name(
+            switch["ip"]
+        )
+
+        names.append(name)
+
+    switch_combo["values"] = names
+
+    # Reset selection
+    switch_combo.set("")
+
+    disconnect_from_switch()
 
 
 # ============================================================
@@ -95,6 +124,166 @@ def disable_command_buttons():
 
 
 # ============================================================
+# Clear Dashboard
+# ============================================================
+
+def clear_dashboard():
+
+    dashboard_hostname.config(
+        text="Hostname: -"
+    )
+
+    dashboard_ip.config(
+        text="IP Address: -"
+    )
+
+    dashboard_status.config(
+        text="Status: No switch selected"
+    )
+
+    dashboard_model.config(
+        text="Model: -"
+    )
+
+    dashboard_junos.config(
+        text="Junos Version: -"
+    )
+
+    dashboard_uptime.config(
+        text="Uptime: -"
+    )
+
+
+# ============================================================
+# Update Dashboard
+# ============================================================
+
+def update_dashboard():
+
+    if connection is None or current_switch is None:
+        clear_dashboard()
+        return
+
+    hostname = generate_switch_name(
+        current_switch["ip"]
+    )
+
+    ip = current_switch["ip"]
+
+    try:
+
+        version_output = connection.send_command(
+            "show version"
+        )
+
+        uptime_output = connection.send_command(
+            "show system uptime"
+        )
+
+        # ----------------------------------------------------
+        # Find Junos Version
+        # ----------------------------------------------------
+
+        junos_version = "-"
+
+        for line in version_output.splitlines():
+
+            if "Junos:" in line:
+
+                junos_version = line.split(
+                    "Junos:", 1
+                )[1].strip()
+
+                break
+
+        # ----------------------------------------------------
+        # Find Model
+        # ----------------------------------------------------
+
+        model = "-"
+
+        for line in version_output.splitlines():
+
+            if "Model:" in line:
+
+                model = line.split(
+                    "Model:", 1
+                )[1].strip()
+
+                break
+
+        # ----------------------------------------------------
+        # Find Uptime
+        # ----------------------------------------------------
+
+        uptime = "-"
+
+        for line in uptime_output.splitlines():
+
+            if "System booted:" in line:
+
+                uptime = line.strip()
+
+                break
+
+            if "System uptime:" in line:
+
+                uptime = line.strip()
+
+                break
+
+        # ----------------------------------------------------
+        # Update Dashboard
+        # ----------------------------------------------------
+
+        dashboard_hostname.config(
+            text=f"Hostname: {hostname}"
+        )
+
+        dashboard_ip.config(
+            text=f"IP Address: {ip}"
+        )
+
+        dashboard_status.config(
+            text="Status: Connected"
+        )
+
+        dashboard_model.config(
+            text=f"Model: {model}"
+        )
+
+        dashboard_junos.config(
+            text=f"Junos Version: {junos_version}"
+        )
+
+        dashboard_uptime.config(
+            text=f"Uptime: {uptime}"
+        )
+
+    except Exception as error:
+
+        print(
+            f"Dashboard error: {error}"
+        )
+
+        dashboard_status.config(
+            text="Status: Connected"
+        )
+
+        dashboard_model.config(
+            text="Model: Unable to retrieve"
+        )
+
+        dashboard_junos.config(
+            text="Junos Version: Unable to retrieve"
+        )
+
+        dashboard_uptime.config(
+            text="Uptime: Unable to retrieve"
+        )
+
+
+# ============================================================
 # Disconnect Current Switch
 # ============================================================
 
@@ -116,8 +305,23 @@ def disconnect_from_switch():
 
     disable_command_buttons()
 
+    # Reset ComboBox selection
+    switch_combo.set("")
+
     status_label.config(
-        text="Status: Not connected"
+        text="Status: No switch selected"
+    )
+
+    clear_dashboard()
+
+    output.delete(
+        "1.0",
+        tk.END
+    )
+
+    output.insert(
+        tk.END,
+        "No switch selected.\n"
     )
 
 
@@ -140,17 +344,16 @@ def connect_to_selected_switch():
 
         disconnect_from_switch()
 
-        status_label.config(
-            text="Status: No switch selected"
-        )
-
         return
 
-    hostname = selected_switch["hostname"]
+    hostname = generate_switch_name(
+        selected_switch["ip"]
+    )
+
     ip = selected_switch["ip"]
 
     # --------------------------------------------------------
-    # Disconnect from previous switch first
+    # Disconnect Previous Switch
     # --------------------------------------------------------
 
     if connection is not None:
@@ -165,13 +368,26 @@ def connect_to_selected_switch():
         current_switch = None
 
         disable_command_buttons()
+        clear_dashboard()
 
     # --------------------------------------------------------
-    # Show connecting status
+    # Show Connecting Status
     # --------------------------------------------------------
 
     status_label.config(
         text=f"Status: Connecting to {hostname}..."
+    )
+
+    dashboard_hostname.config(
+        text=f"Hostname: {hostname}"
+    )
+
+    dashboard_ip.config(
+        text=f"IP Address: {ip}"
+    )
+
+    dashboard_status.config(
+        text="Status: Connecting..."
     )
 
     output.delete(
@@ -212,15 +428,14 @@ def connect_to_selected_switch():
 
         current_switch = selected_switch
 
-        # Status
         status_label.config(
             text=f"Status: Connected to {hostname}"
         )
 
-        # Enable commands
         enable_command_buttons()
 
-        # Output
+        update_dashboard()
+
         output.delete(
             "1.0",
             tk.END
@@ -239,9 +454,10 @@ def connect_to_selected_switch():
         current_switch = None
 
         disable_command_buttons()
+        clear_dashboard()
 
         status_label.config(
-            text=f"Status: Connection failed"
+            text="Status: Connection failed"
         )
 
         output.delete(
@@ -261,6 +477,17 @@ def connect_to_selected_switch():
             f"Could not connect to {hostname}.\n\n"
             + str(error)
         )
+
+
+# ============================================================
+# Generate Password
+# ============================================================
+
+def generate_password(ip):
+
+    last_part = ip.split(".")[-1]
+
+    return "switch-" + last_part
 
 
 # ============================================================
@@ -371,10 +598,22 @@ def show_logs():
     if connection is None:
         return
 
+    # Ask user for number of lines
+    lines = simpledialog.askinteger(
+        "Show Logs",
+        "How many log lines do you want to display?",
+        parent=window,
+        minvalue=1
+    )
+
+    # User pressed Cancel
+    if lines is None:
+        return
+
     try:
 
         result = connection.send_command(
-            "show log messages"
+            f"show log messages | last {lines}"
         )
 
         output.delete(
@@ -407,7 +646,9 @@ def restart_switch():
     if current_switch is None:
         return
 
-    hostname = current_switch["hostname"]
+    hostname = generate_switch_name(
+        current_switch["ip"]
+    )
 
     confirmation = messagebox.askyesno(
         "Restart Switch",
@@ -501,29 +742,11 @@ def switch_selected(event=None):
 
     selected_switch = get_selected_switch()
 
-    # --------------------------------------------------------
-    # Nothing selected
-    # --------------------------------------------------------
-
     if selected_switch is None:
 
         disconnect_from_switch()
 
-        output.delete(
-            "1.0",
-            tk.END
-        )
-
-        output.insert(
-            tk.END,
-            "No switch selected.\n"
-        )
-
         return
-
-    # --------------------------------------------------------
-    # Automatically connect
-    # --------------------------------------------------------
 
     connect_to_selected_switch()
 
@@ -539,7 +762,7 @@ window.title(
 )
 
 window.geometry(
-    "900x750"
+    "900x850"
 )
 
 
@@ -555,6 +778,59 @@ title = tk.Label(
 
 title.pack(
     pady=15
+)
+
+
+# ============================================================
+# Switch Prefix
+# ============================================================
+
+prefix_frame = tk.Frame(
+    window
+)
+
+prefix_frame.pack(
+    pady=5
+)
+
+
+prefix_label = tk.Label(
+    prefix_frame,
+    text="Switch Prefix:",
+    font=("Arial", 11)
+)
+
+prefix_label.pack(
+    side="left",
+    padx=5
+)
+
+
+prefix_entry = tk.Entry(
+    prefix_frame,
+    width=20
+)
+
+prefix_entry.insert(
+    0,
+    "switch-"
+)
+
+prefix_entry.pack(
+    side="left",
+    padx=5
+)
+
+
+update_names_button = tk.Button(
+    prefix_frame,
+    text="Apply Prefix",
+    command=update_switch_names
+)
+
+update_names_button.pack(
+    side="left",
+    padx=5
 )
 
 
@@ -590,7 +866,9 @@ switch_combo = ttk.Combobox(
 )
 
 switch_combo["values"] = [
-    switch["hostname"]
+    generate_switch_name(
+        switch["ip"]
+    )
     for switch in switches
 ]
 
@@ -603,17 +881,6 @@ switch_combo.bind(
     "<<ComboboxSelected>>",
     switch_selected
 )
-
-
-# ============================================================
-# IMPORTANT:
-# Do NOT select a switch automatically.
-#
-# There is NO:
-#
-# switch_combo.current(0)
-#
-# ============================================================
 
 
 # ============================================================
@@ -644,6 +911,96 @@ status_label = tk.Label(
 
 status_label.pack(
     pady=8
+)
+
+
+# ============================================================
+# Switch Dashboard
+# ============================================================
+
+dashboard_frame = tk.LabelFrame(
+    window,
+    text="Switch Dashboard",
+    padx=15,
+    pady=10
+)
+
+dashboard_frame.pack(
+    fill="x",
+    padx=20,
+    pady=10
+)
+
+
+dashboard_hostname = tk.Label(
+    dashboard_frame,
+    text="Hostname: -",
+    anchor="w",
+    font=("Arial", 10)
+)
+
+dashboard_hostname.pack(
+    fill="x"
+)
+
+
+dashboard_ip = tk.Label(
+    dashboard_frame,
+    text="IP Address: -",
+    anchor="w",
+    font=("Arial", 10)
+)
+
+dashboard_ip.pack(
+    fill="x"
+)
+
+
+dashboard_status = tk.Label(
+    dashboard_frame,
+    text="Status: No switch selected",
+    anchor="w",
+    font=("Arial", 10)
+)
+
+dashboard_status.pack(
+    fill="x"
+)
+
+
+dashboard_model = tk.Label(
+    dashboard_frame,
+    text="Model: -",
+    anchor="w",
+    font=("Arial", 10)
+)
+
+dashboard_model.pack(
+    fill="x"
+)
+
+
+dashboard_junos = tk.Label(
+    dashboard_frame,
+    text="Junos Version: -",
+    anchor="w",
+    font=("Arial", 10)
+)
+
+dashboard_junos.pack(
+    fill="x"
+)
+
+
+dashboard_uptime = tk.Label(
+    dashboard_frame,
+    text="Uptime: -",
+    anchor="w",
+    font=("Arial", 10)
+)
+
+dashboard_uptime.pack(
+    fill="x"
 )
 
 
@@ -816,7 +1173,7 @@ output_label.pack(
 output = tk.Text(
     window,
     width=105,
-    height=20
+    height=15
 )
 
 output.pack(
