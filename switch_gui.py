@@ -9,17 +9,23 @@ from netmiko import ConnectHandler
 
 switches = [
     {
-        "ip": "192.168.1.1"
+        "hostname": "switch-1",
+        "ip": "192.168.1.1",
+        "password": "switch-1"
     },
 
     {
-        "ip": "192.168.1.2"
+        "hostname": "switch-2",
+        "ip": "192.168.1.2",
+        "password": "switch-2"
     },
 
     # Add more switches later:
     #
     # {
-    #     "ip": "192.168.1.3"
+    #     "hostname": "switch-3",
+    #     "ip": "192.168.1.3",
+    #     "password": "switch-3"
     # }
 ]
 
@@ -30,22 +36,6 @@ switches = [
 
 connection = None
 current_switch = None
-
-
-# ============================================================
-# Generate Switch Name
-# ============================================================
-
-def generate_switch_name(ip):
-
-    prefix = prefix_entry.get().strip()
-
-    if prefix == "":
-        prefix = "switch-"
-
-    last_part = ip.split(".")[-1]
-
-    return prefix + last_part
 
 
 # ============================================================
@@ -61,37 +51,47 @@ def get_selected_switch():
 
     for switch in switches:
 
-        switch_name = generate_switch_name(
-            switch["ip"]
-        )
-
-        if selected == switch_name:
+        if selected == switch["hostname"]:
             return switch
 
     return None
 
 
 # ============================================================
-# Update Switch Names in ComboBox
+# Update Authentication Key
 # ============================================================
 
-def update_switch_names():
+def update_authentication_key():
 
-    names = []
+    authentication_key = (
+        authentication_key_entry.get().strip()
+    )
+
+    if authentication_key == "":
+
+        messagebox.showwarning(
+            "Missing Authentication Key",
+            "Please enter an authentication key."
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # Update password for every switch
+    # --------------------------------------------------------
 
     for switch in switches:
 
-        name = generate_switch_name(
-            switch["ip"]
+        last_part = switch["ip"].split(".")[-1]
+
+        switch["password"] = (
+            authentication_key + last_part
         )
 
-        names.append(name)
-
-    switch_combo["values"] = names
-
-    switch_combo.set("")
-
-    disconnect_from_switch()
+    messagebox.showinfo(
+        "Authentication Key Updated",
+        "The password database has been updated successfully."
+    )
 
 
 # ============================================================
@@ -160,13 +160,12 @@ def clear_dashboard():
 def update_dashboard():
 
     if connection is None or current_switch is None:
+
         clear_dashboard()
+
         return
 
-    hostname = generate_switch_name(
-        current_switch["ip"]
-    )
-
+    hostname = current_switch["hostname"]
     ip = current_switch["ip"]
 
     try:
@@ -294,9 +293,11 @@ def disconnect_from_switch():
     if connection is not None:
 
         try:
+
             connection.disconnect()
 
         except Exception:
+
             pass
 
     connection = None
@@ -340,11 +341,9 @@ def connect_to_selected_switch():
 
         return
 
-    hostname = generate_switch_name(
-        selected_switch["ip"]
-    )
-
+    hostname = selected_switch["hostname"]
     ip = selected_switch["ip"]
+    password = selected_switch["password"]
 
     # --------------------------------------------------------
     # Disconnect Previous Switch
@@ -353,9 +352,11 @@ def connect_to_selected_switch():
     if connection is not None:
 
         try:
+
             connection.disconnect()
 
         except Exception:
+
             pass
 
         connection = None
@@ -402,7 +403,6 @@ def connect_to_selected_switch():
     # --------------------------------------------------------
 
     username = "admin"
-    password = generate_password(ip)
 
     switch = {
         "device_type": "juniper_junos",
@@ -471,17 +471,6 @@ def connect_to_selected_switch():
             f"Could not connect to {hostname}.\n\n"
             + str(error)
         )
-
-
-# ============================================================
-# Generate Password
-# ============================================================
-
-def generate_password(ip):
-
-    last_part = ip.split(".")[-1]
-
-    return "switch-" + last_part
 
 
 # ============================================================
@@ -667,10 +656,6 @@ def show_interfaces():
     if connection is None:
         return
 
-    # --------------------------------------------------------
-    # Ask User for Filter
-    # --------------------------------------------------------
-
     selected_filter = ask_status_filter(
         "Interface Status"
     )
@@ -798,10 +783,6 @@ def show_vlans():
 
     if connection is None:
         return
-
-    # --------------------------------------------------------
-    # Ask User for Filter
-    # --------------------------------------------------------
 
     selected_filter = ask_status_filter(
         "VLAN Status"
@@ -1157,9 +1138,7 @@ def restart_switch():
     if current_switch is None:
         return
 
-    hostname = generate_switch_name(
-        current_switch["ip"]
-    )
+    hostname = current_switch["hostname"]
 
     confirmation = messagebox.askyesno(
         "Restart Switch",
@@ -1293,53 +1272,53 @@ title.pack(
 
 
 # ============================================================
-# Switch Prefix
+# Authentication Key
 # ============================================================
 
-prefix_frame = tk.Frame(
+authentication_frame = tk.Frame(
     window
 )
 
-prefix_frame.pack(
+authentication_frame.pack(
     pady=5
 )
 
 
-prefix_label = tk.Label(
-    prefix_frame,
-    text="Switch Prefix:",
+authentication_label = tk.Label(
+    authentication_frame,
+    text="Authentication Key:",
     font=("Arial", 11)
 )
 
-prefix_label.pack(
+authentication_label.pack(
     side="left",
     padx=5
 )
 
 
-prefix_entry = tk.Entry(
-    prefix_frame,
+authentication_key_entry = tk.Entry(
+    authentication_frame,
     width=20
 )
 
-prefix_entry.insert(
+authentication_key_entry.insert(
     0,
     "switch-"
 )
 
-prefix_entry.pack(
+authentication_key_entry.pack(
     side="left",
     padx=5
 )
 
 
-update_names_button = tk.Button(
-    prefix_frame,
-    text="Apply Prefix",
-    command=update_switch_names
+update_key_button = tk.Button(
+    authentication_frame,
+    text="Apply Key",
+    command=update_authentication_key
 )
 
-update_names_button.pack(
+update_key_button.pack(
     side="left",
     padx=5
 )
@@ -1377,9 +1356,7 @@ switch_combo = ttk.Combobox(
 )
 
 switch_combo["values"] = [
-    generate_switch_name(
-        switch["ip"]
-    )
+    switch["hostname"]
     for switch in switches
 ]
 
