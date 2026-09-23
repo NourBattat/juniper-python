@@ -89,7 +89,6 @@ def update_switch_names():
 
     switch_combo["values"] = names
 
-    # Reset selection
     switch_combo.set("")
 
     disconnect_from_switch()
@@ -305,7 +304,6 @@ def disconnect_from_switch():
 
     disable_command_buttons()
 
-    # Reset ComboBox selection
     switch_combo.set("")
 
     status_label.config(
@@ -335,10 +333,6 @@ def connect_to_selected_switch():
     global current_switch
 
     selected_switch = get_selected_switch()
-
-    # --------------------------------------------------------
-    # No switch selected
-    # --------------------------------------------------------
 
     if selected_switch is None:
 
@@ -491,6 +485,147 @@ def generate_password(ip):
 
 
 # ============================================================
+# Ask Status Filter
+# ============================================================
+
+def ask_status_filter(title):
+
+    dialog = tk.Toplevel(window)
+
+    dialog.title(title)
+    dialog.geometry("300x170")
+
+    dialog.resizable(
+        False,
+        False
+    )
+
+    dialog.transient(window)
+    dialog.grab_set()
+
+    selected_status = tk.StringVar(
+        value="All"
+    )
+
+    label = tk.Label(
+        dialog,
+        text="Select status:",
+        font=("Arial", 11)
+    )
+
+    label.pack(
+        pady=(20, 5)
+    )
+
+    status_combo = ttk.Combobox(
+        dialog,
+        textvariable=selected_status,
+        values=[
+            "All",
+            "Up",
+            "Down"
+        ],
+        state="readonly",
+        width=15
+    )
+
+    status_combo.pack(
+        pady=5
+    )
+
+    result = {
+        "value": None
+    }
+
+    def confirm():
+
+        result["value"] = selected_status.get()
+
+        dialog.destroy()
+
+    def cancel():
+
+        dialog.destroy()
+
+    button_frame = tk.Frame(
+        dialog
+    )
+
+    button_frame.pack(
+        pady=15
+    )
+
+    ok_button = tk.Button(
+        button_frame,
+        text="OK",
+        width=10,
+        command=confirm
+    )
+
+    ok_button.pack(
+        side="left",
+        padx=5
+    )
+
+    cancel_button = tk.Button(
+        button_frame,
+        text="Cancel",
+        width=10,
+        command=cancel
+    )
+
+    cancel_button.pack(
+        side="left",
+        padx=5
+    )
+
+    window.wait_window(dialog)
+
+    return result["value"]
+
+
+# ============================================================
+# Get Interface Status
+# ============================================================
+
+def get_interface_status():
+
+    result = connection.send_command(
+        "show interfaces terse"
+    )
+
+    interface_status = {}
+
+    for line in result.splitlines():
+
+        stripped = line.strip()
+
+        if stripped == "":
+            continue
+
+        if stripped.startswith("Interface"):
+            continue
+
+        parts = stripped.split()
+
+        if len(parts) < 3:
+            continue
+
+        interface_name = parts[0]
+        admin_status = parts[1]
+        link_status = parts[2]
+
+        is_up = (
+            admin_status == "up"
+            and link_status == "up"
+        )
+
+        interface_status[interface_name] = is_up
+
+    return result, interface_status
+
+
+# ============================================================
 # Show Version
 # ============================================================
 
@@ -532,11 +667,96 @@ def show_interfaces():
     if connection is None:
         return
 
+    # --------------------------------------------------------
+    # Ask User for Filter
+    # --------------------------------------------------------
+
+    selected_filter = ask_status_filter(
+        "Interface Status"
+    )
+
+    if selected_filter is None:
+        return
+
     try:
 
         result = connection.send_command(
             "show interfaces terse"
         )
+
+        # ----------------------------------------------------
+        # Show All
+        # ----------------------------------------------------
+
+        if selected_filter == "All":
+
+            output.delete(
+                "1.0",
+                tk.END
+            )
+
+            output.insert(
+                tk.END,
+                result
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # Filter Interfaces
+        # ----------------------------------------------------
+
+        filtered_lines = []
+
+        for line in result.splitlines():
+
+            stripped = line.strip()
+
+            if stripped.startswith("Interface"):
+
+                filtered_lines.append(line)
+
+                continue
+
+            if stripped == "":
+                continue
+
+            parts = stripped.split()
+
+            if len(parts) < 3:
+                continue
+
+            admin_status = parts[1]
+            link_status = parts[2]
+
+            is_up = (
+                admin_status == "up"
+                and link_status == "up"
+            )
+
+            # ------------------------------------------------
+            # UP
+            # ------------------------------------------------
+
+            if selected_filter == "Up":
+
+                if is_up:
+
+                    filtered_lines.append(line)
+
+            # ------------------------------------------------
+            # DOWN
+            # ------------------------------------------------
+
+            elif selected_filter == "Down":
+
+                if not is_up:
+
+                    filtered_lines.append(line)
+
+        # ----------------------------------------------------
+        # Display
+        # ----------------------------------------------------
 
         output.delete(
             "1.0",
@@ -545,8 +765,22 @@ def show_interfaces():
 
         output.insert(
             tk.END,
-            result
+            f"Interface Filter: {selected_filter}\n\n"
         )
+
+        if len(filtered_lines) > 1:
+
+            output.insert(
+                tk.END,
+                "\n".join(filtered_lines)
+            )
+
+        else:
+
+            output.insert(
+                tk.END,
+                "No interfaces found."
+            )
 
     except Exception as error:
 
@@ -565,11 +799,276 @@ def show_vlans():
     if connection is None:
         return
 
+    # --------------------------------------------------------
+    # Ask User for Filter
+    # --------------------------------------------------------
+
+    selected_filter = ask_status_filter(
+        "VLAN Status"
+    )
+
+    if selected_filter is None:
+        return
+
     try:
 
-        result = connection.send_command(
+        vlan_result = connection.send_command(
             "show vlans"
         )
+
+        # ----------------------------------------------------
+        # Show All
+        # ----------------------------------------------------
+
+        if selected_filter == "All":
+
+            output.delete(
+                "1.0",
+                tk.END
+            )
+
+            output.insert(
+                tk.END,
+                vlan_result
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # Get Interface Status
+        # ----------------------------------------------------
+
+        interface_result, interface_status = (
+            get_interface_status()
+        )
+
+        lines = vlan_result.splitlines()
+
+        vlan_blocks = []
+
+        current_block = []
+        current_interfaces = []
+
+        for line in lines:
+
+            stripped = line.strip()
+
+            # ------------------------------------------------
+            # Header
+            # ------------------------------------------------
+
+            if (
+                stripped.startswith("Routing instance")
+                or stripped.startswith("VLAN name")
+            ):
+
+                if current_block:
+
+                    vlan_blocks.append(
+                        (
+                            current_block,
+                            current_interfaces
+                        )
+                    )
+
+                    current_block = []
+                    current_interfaces = []
+
+                current_block.append(line)
+
+                continue
+
+            # ------------------------------------------------
+            # Empty Line
+            # ------------------------------------------------
+
+            if stripped == "":
+
+                if current_block:
+
+                    current_block.append(line)
+
+                continue
+
+            parts = stripped.split()
+
+            # ------------------------------------------------
+            # Detect Interface
+            # ------------------------------------------------
+
+            interface_name = None
+
+            for part in parts:
+
+                if (
+                    part.startswith("ge-")
+                    or part.startswith("xe-")
+                    or part.startswith("et-")
+                    or part.startswith("ae")
+                    or part.startswith("irb")
+                ):
+
+                    interface_name = part
+
+                    break
+
+            # ------------------------------------------------
+            # Interface Line
+            # ------------------------------------------------
+
+            if interface_name is not None:
+
+                if current_block:
+
+                    current_block.append(line)
+
+                    current_interfaces.append(
+                        interface_name
+                    )
+
+                continue
+
+            # ------------------------------------------------
+            # New VLAN
+            # ------------------------------------------------
+
+            if len(parts) >= 2:
+
+                if current_block:
+
+                    vlan_blocks.append(
+                        (
+                            current_block,
+                            current_interfaces
+                        )
+                    )
+
+                current_block = [line]
+                current_interfaces = []
+
+                continue
+
+            # ------------------------------------------------
+            # Other Line
+            # ------------------------------------------------
+
+            if current_block:
+
+                current_block.append(line)
+
+        # ----------------------------------------------------
+        # Add Last VLAN
+        # ----------------------------------------------------
+
+        if current_block:
+
+            vlan_blocks.append(
+                (
+                    current_block,
+                    current_interfaces
+                )
+            )
+
+        # ----------------------------------------------------
+        # Filter VLANs
+        # ----------------------------------------------------
+
+        filtered_output = []
+
+        for block, interfaces in vlan_blocks:
+
+            if not interfaces:
+
+                if any(
+                    line.strip().startswith(
+                        "Routing instance"
+                    )
+                    for line in block
+                ):
+
+                    filtered_output.extend(
+                        block
+                    )
+
+                continue
+
+            # ------------------------------------------------
+            # Determine VLAN Status
+            # ------------------------------------------------
+
+            up_interfaces = []
+            known_interfaces = []
+
+            for interface in interfaces:
+
+                if interface in interface_status:
+
+                    known_interfaces.append(
+                        interface
+                    )
+
+                    if interface_status[interface]:
+
+                        up_interfaces.append(
+                            interface
+                        )
+
+                elif interface.endswith(".0"):
+
+                    physical_interface = (
+                        interface[:-2]
+                    )
+
+                    if physical_interface in interface_status:
+
+                        known_interfaces.append(
+                            physical_interface
+                        )
+
+                        if interface_status[
+                            physical_interface
+                        ]:
+
+                            up_interfaces.append(
+                                physical_interface
+                            )
+
+            vlan_is_up = (
+                len(up_interfaces) > 0
+            )
+
+            vlan_is_down = (
+                len(known_interfaces) > 0
+                and len(up_interfaces) == 0
+            )
+
+            # ------------------------------------------------
+            # UP
+            # ------------------------------------------------
+
+            if selected_filter == "Up":
+
+                if vlan_is_up:
+
+                    filtered_output.extend(
+                        block
+                    )
+
+            # ------------------------------------------------
+            # DOWN
+            # ------------------------------------------------
+
+            elif selected_filter == "Down":
+
+                if vlan_is_down:
+
+                    filtered_output.extend(
+                        block
+                    )
+
+        # ----------------------------------------------------
+        # Display
+        # ----------------------------------------------------
 
         output.delete(
             "1.0",
@@ -578,8 +1077,22 @@ def show_vlans():
 
         output.insert(
             tk.END,
-            result
+            f"VLAN Filter: {selected_filter}\n\n"
         )
+
+        if filtered_output:
+
+            output.insert(
+                tk.END,
+                "\n".join(filtered_output)
+            )
+
+        else:
+
+            output.insert(
+                tk.END,
+                "No VLANs found for this status."
+            )
 
     except Exception as error:
 
@@ -598,7 +1111,6 @@ def show_logs():
     if connection is None:
         return
 
-    # Ask user for number of lines
     lines = simpledialog.askinteger(
         "Show Logs",
         "How many log lines do you want to display?",
@@ -606,7 +1118,6 @@ def show_logs():
         minvalue=1
     )
 
-    # User pressed Cancel
     if lines is None:
         return
 
