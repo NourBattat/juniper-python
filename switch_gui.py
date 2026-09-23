@@ -1,41 +1,98 @@
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import ttk, messagebox
 from netmiko import ConnectHandler
 
 
-# Store the SSH connection
+# ============================================================
+# Switch Database
+# ============================================================
+
+switches = [
+    {
+        "hostname": "switch-1",
+        "ip": "192.168.1.1"
+    },
+
+    # Add more switches here later:
+    #
+     {
+        "hostname": "switch-2",
+     "ip": "192.168.1.2"
+    },
+    #
+    # {
+    #     "hostname": "switch-3",
+    #     "ip": "192.168.1.3"
+    # }
+]
+
+
+# ============================================================
+# Global Connection
+# ============================================================
+
 connection = None
 
 
-# =========================
+# ============================================================
+# Generate Password
+# ============================================================
+
+def generate_password(ip):
+
+    last_part = ip.split(".")[-1]
+
+    return "switch-" + last_part
+
+
+# ============================================================
+# Get Selected Switch
+# ============================================================
+
+def get_selected_switch():
+
+    selected = switch_combo.get()
+
+    if selected == "":
+        return None
+
+    for switch in switches:
+
+        if selected == switch["hostname"]:
+            return switch
+
+    return None
+
+
+# ============================================================
 # Connect to Switch
-# =========================
+# ============================================================
 
 def connect_to_switch():
+
     global connection
 
-    username = username_entry.get()
-    password = password_entry.get()
+    selected_switch = get_selected_switch()
 
-    # Check username
-    if username == "":
+    if selected_switch is None:
+
         messagebox.showwarning(
-            "Missing Username",
-            "Please enter a username."
+            "No Switch Selected",
+            "Please select a switch first."
         )
+
         return
 
-    # Check password
-    if password == "":
-        messagebox.showwarning(
-            "Missing Password",
-            "Please enter a password."
-        )
-        return
+    hostname = selected_switch["hostname"]
+    ip = selected_switch["ip"]
+
+    # Generate password automatically
+    username = "admin"
+    password = generate_password(ip)
 
     switch = {
         "device_type": "juniper_junos",
-        "host": "192.168.1.1",
+        "host": ip,
         "username": username,
         "password": password,
 
@@ -44,27 +101,25 @@ def connect_to_switch():
     }
 
     try:
-        # Connect to the switch
+
+        # Connect
         connection = ConnectHandler(**switch)
 
         # Update status
         status_label.config(
-            text="Status: Connected"
+            text=f"Status: Connected to {hostname}"
         )
 
-        # Clear output
-        output.delete(
-            "1.0",
-            tk.END
+        # Update selected switch information
+        selected_ip_label.config(
+            text=f"IP Address: {ip}"
         )
 
-        # Show connection message
-        output.insert(
-            tk.END,
-            "Connected to switch!\n\n"
+        selected_host_label.config(
+            text=f"Hostname: {hostname}"
         )
 
-        # Enable command buttons
+        # Enable buttons
         version_button.config(
             state="normal"
         )
@@ -77,16 +132,40 @@ def connect_to_switch():
             state="normal"
         )
 
+        logs_button.config(
+            state="normal"
+        )
+
+        restart_button.config(
+            state="normal"
+        )
+
+        run_command_button.config(
+            state="normal"
+        )
+
+        # Output
+        output.delete(
+            "1.0",
+            tk.END
+        )
+
+        output.insert(
+            tk.END,
+            f"Connected successfully!\n\n"
+            f"Hostname: {hostname}\n"
+            f"IP Address: {ip}\n"
+        )
+
     except Exception as error:
 
-        # Connection failed
         connection = None
 
         status_label.config(
             text="Status: Connection failed"
         )
 
-        # Disable command buttons
+        # Disable buttons
         version_button.config(
             state="disabled"
         )
@@ -96,6 +175,18 @@ def connect_to_switch():
         )
 
         vlans_button.config(
+            state="disabled"
+        )
+
+        logs_button.config(
+            state="disabled"
+        )
+
+        restart_button.config(
+            state="disabled"
+        )
+
+        run_command_button.config(
             state="disabled"
         )
 
@@ -106,9 +197,67 @@ def connect_to_switch():
         )
 
 
-# =========================
+# ============================================================
+# Disconnect
+# ============================================================
+
+def disconnect_from_switch():
+
+    global connection
+
+    if connection is not None:
+
+        try:
+            connection.disconnect()
+        except:
+            pass
+
+        connection = None
+
+    status_label.config(
+        text="Status: Not connected"
+    )
+
+    # Disable buttons
+    version_button.config(
+        state="disabled"
+    )
+
+    interfaces_button.config(
+        state="disabled"
+    )
+
+    vlans_button.config(
+        state="disabled"
+    )
+
+    logs_button.config(
+        state="disabled"
+    )
+
+    restart_button.config(
+        state="disabled"
+    )
+
+    run_command_button.config(
+        state="disabled"
+    )
+
+    # Clear output
+    output.delete(
+        "1.0",
+        tk.END
+    )
+
+    output.insert(
+        tk.END,
+        "Disconnected from switch.\n"
+    )
+
+
+# ============================================================
 # Show Version
-# =========================
+# ============================================================
 
 def show_version():
 
@@ -139,9 +288,9 @@ def show_version():
         )
 
 
-# =========================
+# ============================================================
 # Show Interfaces
-# =========================
+# ============================================================
 
 def show_interfaces():
 
@@ -172,9 +321,9 @@ def show_interfaces():
         )
 
 
-# =========================
+# ============================================================
 # Show VLANs
-# =========================
+# ============================================================
 
 def show_vlans():
 
@@ -205,41 +354,166 @@ def show_vlans():
         )
 
 
-# =========================
-# Disconnect
-# =========================
+# ============================================================
+# Show Logs
+# ============================================================
 
-def disconnect_from_switch():
-    global connection
+def show_logs():
 
-    if connection is not None:
+    if connection is None:
+        return
 
-        try:
-            connection.disconnect()
-        except:
-            pass
+    try:
 
-        connection = None
+        result = connection.send_command(
+            "show log messages"
+        )
 
-    # Update status
+        output.delete(
+            "1.0",
+            tk.END
+        )
+
+        output.insert(
+            tk.END,
+            result
+        )
+
+    except Exception as error:
+
+        messagebox.showerror(
+            "Command Error",
+            str(error)
+        )
+
+
+# ============================================================
+# Restart Switch
+# ============================================================
+
+def restart_switch():
+
+    if connection is None:
+        return
+
+    selected_switch = get_selected_switch()
+
+    if selected_switch is None:
+        return
+
+    hostname = selected_switch["hostname"]
+
+    confirmation = messagebox.askyesno(
+        "Restart Switch",
+        f"Are you sure you want to restart {hostname}?\n\n"
+        "The switch will temporarily go offline."
+    )
+
+    if not confirmation:
+        return
+
+    try:
+
+        result = connection.send_command_timing(
+            "request system reboot"
+        )
+
+        output.delete(
+            "1.0",
+            tk.END
+        )
+
+        output.insert(
+            tk.END,
+            result
+        )
+
+        messagebox.showinfo(
+            "Restart",
+            f"{hostname} is restarting."
+        )
+
+        # Connection will disappear during reboot
+        disconnect_from_switch()
+
+    except Exception as error:
+
+        messagebox.showerror(
+            "Restart Error",
+            str(error)
+        )
+
+
+# ============================================================
+# Run Custom Command
+# ============================================================
+
+def run_custom_command():
+
+    if connection is None:
+        return
+
+    command = command_entry.get().strip()
+
+    if command == "":
+
+        messagebox.showwarning(
+            "Missing Command",
+            "Please enter a Junos command."
+        )
+
+        return
+
+    try:
+
+        result = connection.send_command(
+            command
+        )
+
+        output.delete(
+            "1.0",
+            tk.END
+        )
+
+        output.insert(
+            tk.END,
+            result
+        )
+
+    except Exception as error:
+
+        messagebox.showerror(
+            "Command Error",
+            str(error)
+        )
+
+
+# ============================================================
+# When User Selects Another Switch
+# ============================================================
+
+def switch_selected(event=None):
+
+    selected_switch = get_selected_switch()
+
+    if selected_switch is None:
+        return
+
+    hostname = selected_switch["hostname"]
+    ip = selected_switch["ip"]
+
+    selected_host_label.config(
+        text=f"Hostname: {hostname}"
+    )
+
+    selected_ip_label.config(
+        text=f"IP Address: {ip}"
+    )
+
     status_label.config(
         text="Status: Not connected"
     )
 
-    # Disable buttons
-    version_button.config(
-        state="disabled"
-    )
-
-    interfaces_button.config(
-        state="disabled"
-    )
-
-    vlans_button.config(
-        state="disabled"
-    )
-
-    # Clear output
     output.delete(
         "1.0",
         tk.END
@@ -247,13 +521,16 @@ def disconnect_from_switch():
 
     output.insert(
         tk.END,
-        "Disconnected from switch.\n"
+        f"Selected switch:\n\n"
+        f"Hostname: {hostname}\n"
+        f"IP Address: {ip}\n\n"
+        f"Click Connect to Switch."
     )
 
 
-# =========================
-# Create Window
-# =========================
+# ============================================================
+# Main Window
+# ============================================================
 
 window = tk.Tk()
 
@@ -262,18 +539,18 @@ window.title(
 )
 
 window.geometry(
-    "750x700"
+    "900x850"
 )
 
 
-# =========================
+# ============================================================
 # Title
-# =========================
+# ============================================================
 
 title = tk.Label(
     window,
     text="Juniper Switch Control",
-    font=("Arial", 20)
+    font=("Arial", 22)
 )
 
 title.pack(
@@ -281,80 +558,163 @@ title.pack(
 )
 
 
-# =========================
-# Username
-# =========================
+# ============================================================
+# Switch Selection
+# ============================================================
 
-username_label = tk.Label(
-    window,
-    text="Username:"
+selection_frame = tk.Frame(
+    window
 )
 
-username_label.pack()
-
-
-username_entry = tk.Entry(
-    window,
-    width=30
-)
-
-username_entry.insert(
-    0,
-    "admin"
-)
-
-username_entry.pack(
+selection_frame.pack(
     pady=5
 )
 
 
-# =========================
-# Password
-# =========================
-
-password_label = tk.Label(
-    window,
-    text="Password:"
+select_label = tk.Label(
+    selection_frame,
+    text="Select Switch:",
+    font=("Arial", 11)
 )
 
-password_label.pack()
+select_label.pack(
+    side="left",
+    padx=5
+)
 
 
-password_entry = tk.Entry(
-    window,
+switch_combo = ttk.Combobox(
+    selection_frame,
     width=30,
-    show="*"
+    state="readonly"
 )
 
-password_entry.pack(
-    pady=5
+switch_combo["values"] = [
+    switch["hostname"]
+    for switch in switches
+]
+
+switch_combo.pack(
+    side="left",
+    padx=5
+)
+
+switch_combo.bind(
+    "<<ComboboxSelected>>",
+    switch_selected
 )
 
 
-# =========================
+# Select first switch automatically
+if len(switches) > 0:
+
+    switch_combo.current(0)
+
+
+# ============================================================
+# Switch Information Table
+# ============================================================
+
+table_frame = tk.Frame(
+    window
+)
+
+table_frame.pack(
+    pady=15
+)
+
+
+table = ttk.Treeview(
+    table_frame,
+    columns=("hostname", "ip"),
+    show="headings",
+    height=4
+)
+
+table.heading(
+    "hostname",
+    text="Hostname"
+)
+
+table.heading(
+    "ip",
+    text="IP Address"
+)
+
+table.column(
+    "hostname",
+    width=200
+)
+
+table.column(
+    "ip",
+    width=200
+)
+
+table.pack()
+
+
+# Add switches to table
+for switch in switches:
+
+    table.insert(
+        "",
+        tk.END,
+        values=(
+            switch["hostname"],
+            switch["ip"]
+        )
+    )
+
+
+# ============================================================
+# Selected Switch Information
+# ============================================================
+
+selected_host_label = tk.Label(
+    window,
+    text="Hostname: switch-1"
+)
+
+selected_host_label.pack(
+    pady=2
+)
+
+
+selected_ip_label = tk.Label(
+    window,
+    text="IP Address: 192.168.1.1"
+)
+
+selected_ip_label.pack(
+    pady=2
+)
+
+
+# ============================================================
 # Connect Button
-# =========================
+# ============================================================
 
 connect_button = tk.Button(
     window,
     text="Connect to Switch",
-    width=20,
+    width=22,
     command=connect_to_switch
 )
 
 connect_button.pack(
-    pady=10
+    pady=8
 )
 
 
-# =========================
+# ============================================================
 # Disconnect Button
-# =========================
+# ============================================================
 
 disconnect_button = tk.Button(
     window,
     text="Disconnect",
-    width=20,
+    width=22,
     command=disconnect_from_switch
 )
 
@@ -363,9 +723,9 @@ disconnect_button.pack(
 )
 
 
-# =========================
+# ============================================================
 # Status
-# =========================
+# ============================================================
 
 status_label = tk.Label(
     window,
@@ -374,78 +734,189 @@ status_label = tk.Label(
 )
 
 status_label.pack(
-    pady=10
+    pady=8
 )
 
 
-# =========================
-# Show Version Button
-# =========================
+# ============================================================
+# Basic Commands Frame
+# ============================================================
+
+commands_frame = tk.Frame(
+    window
+)
+
+commands_frame.pack(
+    pady=5
+)
+
+
+# ============================================================
+# Show Version
+# ============================================================
 
 version_button = tk.Button(
-    window,
+    commands_frame,
     text="Show Version",
-    width=20,
+    width=18,
     command=show_version,
     state="disabled"
 )
 
-version_button.pack(
+version_button.grid(
+    row=0,
+    column=0,
+    padx=5,
     pady=5
 )
 
 
-# =========================
-# Show Interfaces Button
-# =========================
+# ============================================================
+# Show Interfaces
+# ============================================================
 
 interfaces_button = tk.Button(
-    window,
+    commands_frame,
     text="Show Interfaces",
-    width=20,
+    width=18,
     command=show_interfaces,
     state="disabled"
 )
 
-interfaces_button.pack(
+interfaces_button.grid(
+    row=0,
+    column=1,
+    padx=5,
     pady=5
 )
 
 
-# =========================
-# Show VLANs Button
-# =========================
+# ============================================================
+# Show VLANs
+# ============================================================
 
 vlans_button = tk.Button(
-    window,
+    commands_frame,
     text="Show VLANs",
-    width=20,
+    width=18,
     command=show_vlans,
     state="disabled"
 )
 
-vlans_button.pack(
+vlans_button.grid(
+    row=0,
+    column=2,
+    padx=5,
     pady=5
 )
 
 
-# =========================
-# Output Box
-# =========================
+# ============================================================
+# Show Logs
+# ============================================================
+
+logs_button = tk.Button(
+    commands_frame,
+    text="Show Logs",
+    width=18,
+    command=show_logs,
+    state="disabled"
+)
+
+logs_button.grid(
+    row=0,
+    column=3,
+    padx=5,
+    pady=5
+)
+
+
+# ============================================================
+# Restart
+# ============================================================
+
+restart_button = tk.Button(
+    commands_frame,
+    text="Restart Switch",
+    width=18,
+    command=restart_switch,
+    state="disabled"
+)
+
+restart_button.grid(
+    row=1,
+    column=0,
+    columnspan=4,
+    pady=8
+)
+
+
+# ============================================================
+# Custom Command
+# ============================================================
+
+command_label = tk.Label(
+    window,
+    text="Custom Junos Command:",
+    font=("Arial", 11)
+)
+
+command_label.pack(
+    pady=(10, 5)
+)
+
+
+command_entry = tk.Entry(
+    window,
+    width=65
+)
+
+command_entry.pack(
+    pady=5
+)
+
+
+run_command_button = tk.Button(
+    window,
+    text="Run Command",
+    width=22,
+    command=run_custom_command,
+    state="disabled"
+)
+
+run_command_button.pack(
+    pady=5
+)
+
+
+# ============================================================
+# Output
+# ============================================================
+
+output_label = tk.Label(
+    window,
+    text="Command Output:",
+    font=("Arial", 11)
+)
+
+output_label.pack(
+    pady=(10, 5)
+)
+
 
 output = tk.Text(
     window,
-    width=85,
-    height=22
+    width=105,
+    height=20
 )
 
 output.pack(
-    pady=15
+    pady=5
 )
 
 
-# =========================
+# ============================================================
 # Start GUI
-# =========================
+# ============================================================
 
 window.mainloop()
