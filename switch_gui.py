@@ -13,12 +13,12 @@ switches = [
         "ip": "192.168.1.1"
     },
 
-    # Add more switches here later:
-    #
-     {
+    {
         "hostname": "switch-2",
-     "ip": "192.168.1.2"
+        "ip": "192.168.1.2"
     },
+
+    # Add more switches later:
     #
     # {
     #     "hostname": "switch-3",
@@ -32,6 +32,8 @@ switches = [
 # ============================================================
 
 connection = None
+
+current_switch = None
 
 
 # ============================================================
@@ -65,20 +67,81 @@ def get_selected_switch():
 
 
 # ============================================================
-# Connect to Switch
+# Enable Command Buttons
 # ============================================================
 
-def connect_to_switch():
+def enable_command_buttons():
+
+    version_button.config(state="normal")
+    interfaces_button.config(state="normal")
+    vlans_button.config(state="normal")
+    logs_button.config(state="normal")
+    restart_button.config(state="normal")
+    run_command_button.config(state="normal")
+
+
+# ============================================================
+# Disable Command Buttons
+# ============================================================
+
+def disable_command_buttons():
+
+    version_button.config(state="disabled")
+    interfaces_button.config(state="disabled")
+    vlans_button.config(state="disabled")
+    logs_button.config(state="disabled")
+    restart_button.config(state="disabled")
+    run_command_button.config(state="disabled")
+
+
+# ============================================================
+# Disconnect Current Switch
+# ============================================================
+
+def disconnect_from_switch():
 
     global connection
+    global current_switch
+
+    if connection is not None:
+
+        try:
+            connection.disconnect()
+
+        except Exception:
+            pass
+
+    connection = None
+    current_switch = None
+
+    disable_command_buttons()
+
+    status_label.config(
+        text="Status: Not connected"
+    )
+
+
+# ============================================================
+# Connect Automatically to Selected Switch
+# ============================================================
+
+def connect_to_selected_switch():
+
+    global connection
+    global current_switch
 
     selected_switch = get_selected_switch()
 
+    # --------------------------------------------------------
+    # No switch selected
+    # --------------------------------------------------------
+
     if selected_switch is None:
 
-        messagebox.showwarning(
-            "No Switch Selected",
-            "Please select a switch first."
+        disconnect_from_switch()
+
+        status_label.config(
+            text="Status: No switch selected"
         )
 
         return
@@ -86,7 +149,48 @@ def connect_to_switch():
     hostname = selected_switch["hostname"]
     ip = selected_switch["ip"]
 
-    # Generate password automatically
+    # --------------------------------------------------------
+    # Disconnect from previous switch first
+    # --------------------------------------------------------
+
+    if connection is not None:
+
+        try:
+            connection.disconnect()
+
+        except Exception:
+            pass
+
+        connection = None
+        current_switch = None
+
+        disable_command_buttons()
+
+    # --------------------------------------------------------
+    # Show connecting status
+    # --------------------------------------------------------
+
+    status_label.config(
+        text=f"Status: Connecting to {hostname}..."
+    )
+
+    output.delete(
+        "1.0",
+        tk.END
+    )
+
+    output.insert(
+        tk.END,
+        f"Connecting to {hostname}...\n"
+        f"IP Address: {ip}\n"
+    )
+
+    window.update()
+
+    # --------------------------------------------------------
+    # Credentials
+    # --------------------------------------------------------
+
     username = "admin"
     password = generate_password(ip)
 
@@ -95,54 +199,26 @@ def connect_to_switch():
         "host": ip,
         "username": username,
         "password": password,
-
-        # Disable SSH agent authentication
         "allow_agent": False
     }
 
+    # --------------------------------------------------------
+    # Connect
+    # --------------------------------------------------------
+
     try:
 
-        # Connect
         connection = ConnectHandler(**switch)
 
-        # Update status
+        current_switch = selected_switch
+
+        # Status
         status_label.config(
             text=f"Status: Connected to {hostname}"
         )
 
-        # Update selected switch information
-        selected_ip_label.config(
-            text=f"IP Address: {ip}"
-        )
-
-        selected_host_label.config(
-            text=f"Hostname: {hostname}"
-        )
-
-        # Enable buttons
-        version_button.config(
-            state="normal"
-        )
-
-        interfaces_button.config(
-            state="normal"
-        )
-
-        vlans_button.config(
-            state="normal"
-        )
-
-        logs_button.config(
-            state="normal"
-        )
-
-        restart_button.config(
-            state="normal"
-        )
-
-        run_command_button.config(
-            state="normal"
-        )
+        # Enable commands
+        enable_command_buttons()
 
         # Output
         output.delete(
@@ -160,99 +236,31 @@ def connect_to_switch():
     except Exception as error:
 
         connection = None
+        current_switch = None
+
+        disable_command_buttons()
 
         status_label.config(
-            text="Status: Connection failed"
+            text=f"Status: Connection failed"
         )
 
-        # Disable buttons
-        version_button.config(
-            state="disabled"
+        output.delete(
+            "1.0",
+            tk.END
         )
 
-        interfaces_button.config(
-            state="disabled"
-        )
-
-        vlans_button.config(
-            state="disabled"
-        )
-
-        logs_button.config(
-            state="disabled"
-        )
-
-        restart_button.config(
-            state="disabled"
-        )
-
-        run_command_button.config(
-            state="disabled"
+        output.insert(
+            tk.END,
+            f"Could not connect to {hostname}\n\n"
+            f"IP Address: {ip}\n\n"
+            f"Error:\n{error}"
         )
 
         messagebox.showerror(
             "Connection Error",
-            "Could not connect to the switch.\n\n"
+            f"Could not connect to {hostname}.\n\n"
             + str(error)
         )
-
-
-# ============================================================
-# Disconnect
-# ============================================================
-
-def disconnect_from_switch():
-
-    global connection
-
-    if connection is not None:
-
-        try:
-            connection.disconnect()
-        except:
-            pass
-
-        connection = None
-
-    status_label.config(
-        text="Status: Not connected"
-    )
-
-    # Disable buttons
-    version_button.config(
-        state="disabled"
-    )
-
-    interfaces_button.config(
-        state="disabled"
-    )
-
-    vlans_button.config(
-        state="disabled"
-    )
-
-    logs_button.config(
-        state="disabled"
-    )
-
-    restart_button.config(
-        state="disabled"
-    )
-
-    run_command_button.config(
-        state="disabled"
-    )
-
-    # Clear output
-    output.delete(
-        "1.0",
-        tk.END
-    )
-
-    output.insert(
-        tk.END,
-        "Disconnected from switch.\n"
-    )
 
 
 # ============================================================
@@ -396,12 +404,10 @@ def restart_switch():
     if connection is None:
         return
 
-    selected_switch = get_selected_switch()
-
-    if selected_switch is None:
+    if current_switch is None:
         return
 
-    hostname = selected_switch["hostname"]
+    hostname = current_switch["hostname"]
 
     confirmation = messagebox.askyesno(
         "Restart Switch",
@@ -433,7 +439,6 @@ def restart_switch():
             f"{hostname} is restarting."
         )
 
-        # Connection will disappear during reboot
         disconnect_from_switch()
 
     except Exception as error:
@@ -496,36 +501,31 @@ def switch_selected(event=None):
 
     selected_switch = get_selected_switch()
 
+    # --------------------------------------------------------
+    # Nothing selected
+    # --------------------------------------------------------
+
     if selected_switch is None:
+
+        disconnect_from_switch()
+
+        output.delete(
+            "1.0",
+            tk.END
+        )
+
+        output.insert(
+            tk.END,
+            "No switch selected.\n"
+        )
+
         return
 
-    hostname = selected_switch["hostname"]
-    ip = selected_switch["ip"]
+    # --------------------------------------------------------
+    # Automatically connect
+    # --------------------------------------------------------
 
-    selected_host_label.config(
-        text=f"Hostname: {hostname}"
-    )
-
-    selected_ip_label.config(
-        text=f"IP Address: {ip}"
-    )
-
-    status_label.config(
-        text="Status: Not connected"
-    )
-
-    output.delete(
-        "1.0",
-        tk.END
-    )
-
-    output.insert(
-        tk.END,
-        f"Selected switch:\n\n"
-        f"Hostname: {hostname}\n"
-        f"IP Address: {ip}\n\n"
-        f"Click Connect to Switch."
-    )
+    connect_to_selected_switch()
 
 
 # ============================================================
@@ -539,7 +539,7 @@ window.title(
 )
 
 window.geometry(
-    "900x850"
+    "900x750"
 )
 
 
@@ -567,7 +567,7 @@ selection_frame = tk.Frame(
 )
 
 selection_frame.pack(
-    pady=5
+    pady=10
 )
 
 
@@ -605,106 +605,15 @@ switch_combo.bind(
 )
 
 
-# Select first switch automatically
-if len(switches) > 0:
-
-    switch_combo.current(0)
-
-
 # ============================================================
-# Switch Information Table
+# IMPORTANT:
+# Do NOT select a switch automatically.
+#
+# There is NO:
+#
+# switch_combo.current(0)
+#
 # ============================================================
-
-table_frame = tk.Frame(
-    window
-)
-
-table_frame.pack(
-    pady=15
-)
-
-
-table = ttk.Treeview(
-    table_frame,
-    columns=("hostname", "ip"),
-    show="headings",
-    height=4
-)
-
-table.heading(
-    "hostname",
-    text="Hostname"
-)
-
-table.heading(
-    "ip",
-    text="IP Address"
-)
-
-table.column(
-    "hostname",
-    width=200
-)
-
-table.column(
-    "ip",
-    width=200
-)
-
-table.pack()
-
-
-# Add switches to table
-for switch in switches:
-
-    table.insert(
-        "",
-        tk.END,
-        values=(
-            switch["hostname"],
-            switch["ip"]
-        )
-    )
-
-
-# ============================================================
-# Selected Switch Information
-# ============================================================
-
-selected_host_label = tk.Label(
-    window,
-    text="Hostname: switch-1"
-)
-
-selected_host_label.pack(
-    pady=2
-)
-
-
-selected_ip_label = tk.Label(
-    window,
-    text="IP Address: 192.168.1.1"
-)
-
-selected_ip_label.pack(
-    pady=2
-)
-
-
-# ============================================================
-# Connect Button
-# ============================================================
-
-connect_button = tk.Button(
-    window,
-    text="Connect to Switch",
-    width=22,
-    command=connect_to_switch
-)
-
-connect_button.pack(
-    pady=8
-)
 
 
 # ============================================================
@@ -719,7 +628,7 @@ disconnect_button = tk.Button(
 )
 
 disconnect_button.pack(
-    pady=5
+    pady=8
 )
 
 
@@ -729,7 +638,7 @@ disconnect_button.pack(
 
 status_label = tk.Label(
     window,
-    text="Status: Not connected",
+    text="Status: No switch selected",
     font=("Arial", 11)
 )
 
