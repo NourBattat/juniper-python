@@ -1,6 +1,10 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 from netmiko import ConnectHandler
+import json
+import os
+import re
+from datetime import datetime
 
 
 # ============================================================
@@ -19,15 +23,178 @@ switches = [
         "ip": "192.168.1.2",
         "password": "switch-2"
     },
-
-    # Add more switches later:
-    #
-    # {
-    #     "hostname": "switch-3",
-    #     "ip": "192.168.1.3",
-    #     "password": "switch-3"
-    # }
 ]
+
+
+# ============================================================
+# Database Files
+# ============================================================
+
+PASSWORD_DATABASE_FILE = "switch_passwords.json"
+LOGIN_PROFILE_DATABASE_FILE = "login_profiles.json"
+
+
+# ============================================================
+# Login Profile
+# ============================================================
+
+active_login_profile = None
+
+
+# ============================================================
+# Load Password Database
+# ============================================================
+
+def load_password_database():
+
+    if not os.path.exists(PASSWORD_DATABASE_FILE):
+        return
+
+    try:
+
+        with open(
+            PASSWORD_DATABASE_FILE,
+            "r"
+        ) as file:
+
+            saved_passwords = json.load(file)
+
+        for switch in switches:
+
+            hostname = switch["hostname"]
+
+            if hostname in saved_passwords:
+
+                switch["password"] = (
+                    saved_passwords[hostname]
+                )
+
+    except Exception as error:
+
+        print(
+            f"Could not load password database: {error}"
+        )
+
+
+# ============================================================
+# Save Password Database
+# ============================================================
+
+def save_password_database():
+
+    passwords = {}
+
+    for switch in switches:
+
+        passwords[switch["hostname"]] = (
+            switch["password"]
+        )
+
+    try:
+
+        with open(
+            PASSWORD_DATABASE_FILE,
+            "w"
+        ) as file:
+
+            json.dump(
+                passwords,
+                file,
+                indent=4
+            )
+
+    except Exception as error:
+
+        messagebox.showerror(
+            "Database Error",
+            "Could not save password database.\n\n"
+            + str(error)
+        )
+
+
+# ============================================================
+# Load Login Profile Database
+# ============================================================
+
+def load_login_profiles():
+
+    if not os.path.exists(
+        LOGIN_PROFILE_DATABASE_FILE
+    ):
+
+        return {}
+
+    try:
+
+        with open(
+            LOGIN_PROFILE_DATABASE_FILE,
+            "r"
+        ) as file:
+
+            profiles = json.load(file)
+
+        if isinstance(profiles, dict):
+
+            return profiles
+
+        return {}
+
+    except Exception as error:
+
+        print(
+            f"Could not load login profiles: {error}"
+        )
+
+        return {}
+
+
+# ============================================================
+# Save Login Profile
+# ============================================================
+
+def save_login_profile(
+    username,
+    prefix
+):
+
+    try:
+
+        profiles = load_login_profiles()
+
+        profiles[username] = {
+            "username": username,
+            "prefix": prefix
+        }
+
+        with open(
+            LOGIN_PROFILE_DATABASE_FILE,
+            "w"
+        ) as file:
+
+            json.dump(
+                profiles,
+                file,
+                indent=4
+            )
+
+        return True
+
+    except Exception as error:
+
+        messagebox.showerror(
+            "Profile Database Error",
+            "Could not save login profile.\n\n"
+            + str(error)
+        )
+
+        return False
+
+
+# ============================================================
+# Load Saved Passwords
+# ============================================================
+
+load_password_database()
 
 
 # ============================================================
@@ -36,6 +203,20 @@ switches = [
 
 connection = None
 current_switch = None
+
+
+# ============================================================
+# Live Monitoring Settings
+# ============================================================
+
+DEFAULT_REFRESH_SECONDS = 60
+
+refresh_seconds = DEFAULT_REFRESH_SECONDS
+
+refresh_job = None
+refresh_countdown_job = None
+
+remaining_refresh_seconds = DEFAULT_REFRESH_SECONDS
 
 
 # ============================================================
@@ -52,9 +233,260 @@ def get_selected_switch():
     for switch in switches:
 
         if selected == switch["hostname"]:
+
             return switch
 
     return None
+
+
+# ============================================================
+# Generate Login Profile Password
+# ============================================================
+
+def generate_profile_password(
+    switch,
+    prefix
+):
+
+    ip = switch["ip"]
+
+    last_octet = ip.split(".")[-1]
+
+    return prefix + last_octet
+
+
+# ============================================================
+# Use Login Profile
+# ============================================================
+
+def use_login_profile():
+
+    global active_login_profile
+
+    username = login_username_entry.get().strip()
+    prefix = login_prefix_entry.get().strip()
+
+    if username == "":
+
+        messagebox.showwarning(
+            "Missing Username",
+            "Please enter a username."
+        )
+
+        return
+
+    if prefix == "":
+
+        messagebox.showwarning(
+            "Missing Prefix",
+            "Please enter a password prefix."
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # Save profile
+    # --------------------------------------------------------
+
+    if not save_login_profile(
+        username,
+        prefix
+    ):
+
+        return
+
+    active_login_profile = {
+        "username": username,
+        "prefix": prefix
+    }
+
+    login_profile_status.config(
+        text=(
+            f"Login Profile: {username} "
+            f"(Prefix: {prefix})"
+        )
+    )
+
+    output.delete(
+        "1.0",
+        tk.END
+    )
+
+    output.insert(
+        tk.END,
+        "Login profile activated.\n\n"
+        f"Username: {username}\n"
+        f"Password format: {prefix}<last IP octet>\n\n"
+        "The generated password will be used "
+        "when connecting to a switch."
+    )
+
+    # --------------------------------------------------------
+    # If already connected, reconnect using profile
+    # --------------------------------------------------------
+
+    if current_switch is not None:
+
+        selected_switch = current_switch
+
+        confirmation = messagebox.askyesno(
+            "Reconnect",
+            "The login profile has been activated.\n\n"
+            "Do you want to reconnect to the current "
+            "switch using this profile?"
+        )
+
+        if confirmation:
+
+            connect_to_selected_switch()
+
+
+# ============================================================
+# Disable Login Profile
+# ============================================================
+
+def disable_login_profile():
+
+    global active_login_profile
+
+    active_login_profile = None
+
+    login_profile_status.config(
+        text="Login Profile: Disabled"
+    )
+
+    output.delete(
+        "1.0",
+        tk.END
+    )
+
+    output.insert(
+        tk.END,
+        "Login profile disabled.\n\n"
+        "The application will use the switch's "
+        "stored admin credentials."
+    )
+
+
+# ============================================================
+# Change Admin Password on One Juniper Switch
+# ============================================================
+
+def change_switch_password(
+    switch,
+    new_password
+):
+
+    old_connection = None
+
+    try:
+
+        # ----------------------------------------------------
+        # Connect using CURRENT admin password
+        # ----------------------------------------------------
+
+        device = {
+            "device_type": "juniper_junos",
+            "host": switch["ip"],
+            "username": "admin",
+            "password": switch["password"],
+            "allow_agent": False
+        }
+
+        old_connection = ConnectHandler(
+            **device
+        )
+
+        # ----------------------------------------------------
+        # Enter configuration mode
+        # ----------------------------------------------------
+
+        old_connection.config_mode()
+
+        # ----------------------------------------------------
+        # Start password change
+        # ----------------------------------------------------
+
+        result = old_connection.send_command_timing(
+            "set system login user admin "
+            "authentication plain-text-password"
+        )
+
+        # ----------------------------------------------------
+        # Check for password prompt
+        # ----------------------------------------------------
+
+        if "new password" not in result.lower():
+
+            raise Exception(
+                "Juniper did not ask for the new password.\n\n"
+                + result
+            )
+
+        # ----------------------------------------------------
+        # Send NEW password
+        # ----------------------------------------------------
+
+        result = old_connection.send_command_timing(
+            new_password
+        )
+
+        # ----------------------------------------------------
+        # Check confirmation prompt
+        # ----------------------------------------------------
+
+        if "retype new password" not in result.lower():
+
+            raise Exception(
+                "Juniper did not ask to retype the new password.\n\n"
+                + result
+            )
+
+        # ----------------------------------------------------
+        # Send NEW password again
+        # ----------------------------------------------------
+
+        old_connection.send_command_timing(
+            new_password
+        )
+
+        # ----------------------------------------------------
+        # Commit configuration
+        # ----------------------------------------------------
+
+        commit_result = old_connection.commit(
+            comment="Update admin password"
+        )
+
+        # ----------------------------------------------------
+        # Disconnect
+        # ----------------------------------------------------
+
+        old_connection.disconnect()
+
+        old_connection = None
+
+        # ----------------------------------------------------
+        # Update application database
+        # ----------------------------------------------------
+
+        switch["password"] = new_password
+
+        return True, commit_result
+
+    except Exception as error:
+
+        if old_connection is not None:
+
+            try:
+
+                old_connection.disconnect()
+
+            except Exception:
+
+                pass
+
+        return False, str(error)
 
 
 # ============================================================
@@ -76,21 +508,168 @@ def update_authentication_key():
 
         return
 
+    confirmation = messagebox.askyesno(
+        "Change Admin Passwords",
+        "This will change the admin password on ALL "
+        "switches in the database.\n\n"
+        "The new password will be created from:\n"
+        "Authentication Key + Last IP Octet\n\n"
+        "Do you want to continue?"
+    )
+
+    if not confirmation:
+        return
+
     # --------------------------------------------------------
-    # Update password for every switch
+    # Disconnect current switch
+    # --------------------------------------------------------
+
+    if connection is not None:
+
+        disconnect_from_switch()
+
+    update_key_button.config(
+        state="disabled"
+    )
+
+    switch_combo.config(
+        state="disabled"
+    )
+
+    window.update()
+
+    successful_switches = []
+    failed_switches = []
+
+    # --------------------------------------------------------
+    # Process every switch
     # --------------------------------------------------------
 
     for switch in switches:
 
-        last_part = switch["ip"].split(".")[-1]
+        hostname = switch["hostname"]
+        ip = switch["ip"]
 
-        switch["password"] = (
+        last_part = ip.split(".")[-1]
+
+        new_password = (
             authentication_key + last_part
         )
 
+        output.delete(
+            "1.0",
+            tk.END
+        )
+
+        output.insert(
+            tk.END,
+            f"Changing admin password for {hostname}...\n\n"
+            f"IP Address: {ip}\n\n"
+            f"Connecting using current password...\n"
+        )
+
+        status_label.config(
+            text=f"Status: Updating password for {hostname}..."
+        )
+
+        window.update()
+
+        success, result = change_switch_password(
+            switch,
+            new_password
+        )
+
+        if success:
+
+            successful_switches.append(
+                hostname
+            )
+
+            output.insert(
+                tk.END,
+                "\nPassword changed successfully.\n"
+                "Junos configuration committed.\n"
+                "Application database updated.\n"
+            )
+
+        else:
+
+            failed_switches.append(
+                (
+                    hostname,
+                    result
+                )
+            )
+
+            output.insert(
+                tk.END,
+                "\nPassword change FAILED.\n\n"
+                f"Error:\n{result}\n"
+            )
+
+        window.update()
+
+    # --------------------------------------------------------
+    # Save database
+    # --------------------------------------------------------
+
+    if successful_switches:
+
+        save_password_database()
+
+    # --------------------------------------------------------
+    # Restore GUI
+    # --------------------------------------------------------
+
+    switch_combo.config(
+        state="readonly"
+    )
+
+    update_key_button.config(
+        state="normal"
+    )
+
+    status_label.config(
+        text="Status: No switch selected"
+    )
+
+    clear_dashboard()
+
+    result_message = ""
+
+    if successful_switches:
+
+        result_message += (
+            "Successfully updated:\n\n"
+        )
+
+        for hostname in successful_switches:
+
+            result_message += (
+                f"✓ {hostname}\n"
+            )
+
+    if failed_switches:
+
+        result_message += (
+            "\nFailed:\n\n"
+        )
+
+        for hostname, error in failed_switches:
+
+            result_message += (
+                f"✗ {hostname}\n"
+            )
+
+    if not result_message:
+
+        result_message = (
+            "No switches were updated."
+        )
+
     messagebox.showinfo(
-        "Authentication Key Updated",
-        "The password database has been updated successfully."
+        "Authentication Key Update",
+        result_message
     )
 
 
@@ -100,12 +679,29 @@ def update_authentication_key():
 
 def enable_command_buttons():
 
-    version_button.config(state="normal")
-    interfaces_button.config(state="normal")
-    vlans_button.config(state="normal")
-    logs_button.config(state="normal")
-    restart_button.config(state="normal")
-    run_command_button.config(state="normal")
+    version_button.config(
+        state="normal"
+    )
+
+    interfaces_button.config(
+        state="normal"
+    )
+
+    vlans_button.config(
+        state="normal"
+    )
+
+    logs_button.config(
+        state="normal"
+    )
+
+    restart_button.config(
+        state="normal"
+    )
+
+    run_command_button.config(
+        state="normal"
+    )
 
 
 # ============================================================
@@ -114,12 +710,29 @@ def enable_command_buttons():
 
 def disable_command_buttons():
 
-    version_button.config(state="disabled")
-    interfaces_button.config(state="disabled")
-    vlans_button.config(state="disabled")
-    logs_button.config(state="disabled")
-    restart_button.config(state="disabled")
-    run_command_button.config(state="disabled")
+    version_button.config(
+        state="disabled"
+    )
+
+    interfaces_button.config(
+        state="disabled"
+    )
+
+    vlans_button.config(
+        state="disabled"
+    )
+
+    logs_button.config(
+        state="disabled"
+    )
+
+    restart_button.config(
+        state="disabled"
+    )
+
+    run_command_button.config(
+        state="disabled"
+    )
 
 
 # ============================================================
@@ -152,9 +765,595 @@ def clear_dashboard():
         text="Uptime: -"
     )
 
+    monitor_status.config(
+        text="Monitoring: Stopped"
+    )
+
+    monitor_cpu_load.config(
+        text="CPU Load: -"
+    )
+
+    monitor_cpu_idle.config(
+        text="CPU Idle: -"
+    )
+
+    monitor_load_average.config(
+        text="Load Average: -"
+    )
+
+    monitor_temperature.config(
+        text="Temperature: -"
+    )
+
+    monitor_routing_engine.config(
+        text="Routing Engine: -"
+    )
+
+    monitor_alarms.config(
+        text="Chassis Alarms: -"
+    )
+
+    monitor_last_update.config(
+        text="Last Update: -"
+    )
+
+    monitor_countdown.config(
+        text="Next Refresh: -"
+    )
+
 
 # ============================================================
-# Update Dashboard
+# Parse Routing Engine Information
+# ============================================================
+
+def parse_routing_engine(result):
+
+    cpu_idle = None
+    load_1 = None
+    load_5 = None
+    load_15 = None
+
+    for line in result.splitlines():
+
+        if "Idle" in line:
+
+            match = re.search(
+                r"(\d+)\s*percent",
+                line,
+                re.IGNORECASE
+            )
+
+            if match:
+
+                cpu_idle = int(
+                    match.group(1)
+                )
+
+                break
+
+    for line in result.splitlines():
+
+        lower = line.lower()
+
+        if "load averages" in lower:
+
+            numbers = re.findall(
+                r"\d+\.\d+",
+                line
+            )
+
+            if len(numbers) >= 3:
+
+                load_1 = numbers[0]
+                load_5 = numbers[1]
+                load_15 = numbers[2]
+
+                break
+
+    return (
+        cpu_idle,
+        load_1,
+        load_5,
+        load_15
+    )
+
+
+# ============================================================
+# Parse Temperature
+# ============================================================
+
+def parse_temperature(result):
+
+    temperatures = []
+
+    for line in result.splitlines():
+
+        lower = line.lower()
+
+        if (
+            "degrees c" in lower
+            or "temperature" in lower
+        ):
+
+            matches = re.findall(
+                r"(-?\d+)\s*(?:degrees\s*c|celsius|c)\b",
+                line,
+                re.IGNORECASE
+            )
+
+            for value in matches:
+
+                temperatures.append(
+                    int(value)
+                )
+
+    if temperatures:
+
+        return max(
+            temperatures
+        )
+
+    return None
+
+
+# ============================================================
+# Parse Chassis Alarms
+# ============================================================
+
+def parse_alarms(result):
+
+    alarms = []
+
+    for line in result.splitlines():
+
+        stripped = line.strip()
+
+        if stripped == "":
+            continue
+
+        lower = stripped.lower()
+
+        if (
+            "no alarms currently active" in lower
+            or "no alarms" in lower
+        ):
+
+            return 0
+
+        if (
+            "alarm" in lower
+            and not lower.startswith("alarm")
+        ):
+
+            alarms.append(
+                stripped
+            )
+
+    actual_alarm_lines = []
+
+    for line in result.splitlines():
+
+        stripped = line.strip()
+
+        if stripped == "":
+            continue
+
+        if re.match(
+            r"^\d+\s+",
+            stripped
+        ):
+
+            actual_alarm_lines.append(
+                stripped
+            )
+
+    if actual_alarm_lines:
+
+        return len(
+            actual_alarm_lines
+        )
+
+    if alarms:
+
+        return len(
+            alarms
+        )
+
+    return 0
+
+
+# ============================================================
+# Update Live Monitoring Dashboard
+# ============================================================
+
+def update_live_monitor():
+
+    global remaining_refresh_seconds
+
+    if connection is None or current_switch is None:
+
+        monitor_countdown.config(
+            text="Next Refresh: -"
+        )
+
+        return
+
+    try:
+
+        routing_engine_output = (
+            connection.send_command(
+                "show chassis routing-engine"
+            )
+        )
+
+        (
+            cpu_idle,
+            load_1,
+            load_5,
+            load_15
+        ) = parse_routing_engine(
+            routing_engine_output
+        )
+
+        environment_output = (
+            connection.send_command(
+                "show chassis environment"
+            )
+        )
+
+        temperature = parse_temperature(
+            environment_output
+        )
+
+        alarm_output = (
+            connection.send_command(
+                "show chassis alarms"
+            )
+        )
+
+        alarm_count = parse_alarms(
+            alarm_output
+        )
+
+        if cpu_idle is not None:
+
+            cpu_load = 100 - cpu_idle
+
+            monitor_cpu_idle.config(
+                text=f"CPU Idle: {cpu_idle}%"
+            )
+
+            monitor_cpu_load.config(
+                text=f"CPU Load: {cpu_load}%"
+            )
+
+        else:
+
+            monitor_cpu_idle.config(
+                text="CPU Idle: Unable to retrieve"
+            )
+
+            monitor_cpu_load.config(
+                text="CPU Load: Unable to retrieve"
+            )
+
+        if load_1 is not None:
+
+            monitor_load_average.config(
+                text=(
+                    f"Load Average: "
+                    f"{load_1} / {load_5} / {load_15}"
+                )
+            )
+
+        else:
+
+            monitor_load_average.config(
+                text="Load Average: Unable to retrieve"
+            )
+
+        if temperature is not None:
+
+            monitor_temperature.config(
+                text=f"Temperature: {temperature}°C"
+            )
+
+        else:
+
+            monitor_temperature.config(
+                text="Temperature: Unable to retrieve"
+            )
+
+        monitor_routing_engine.config(
+            text="Routing Engine: Online"
+        )
+
+        if alarm_count == 0:
+
+            monitor_alarms.config(
+                text="Chassis Alarms: 0 (Normal)"
+            )
+
+        else:
+
+            monitor_alarms.config(
+                text=f"Chassis Alarms: {alarm_count}"
+            )
+
+        current_time = datetime.now().strftime(
+            "%H:%M:%S"
+        )
+
+        monitor_last_update.config(
+            text=f"Last Update: {current_time}"
+        )
+
+        monitor_status.config(
+            text="Monitoring: Live"
+        )
+
+        remaining_refresh_seconds = (
+            refresh_seconds
+        )
+
+        update_countdown()
+
+    except Exception as error:
+
+        print(
+            f"Live monitoring error: {error}"
+        )
+
+        monitor_status.config(
+            text="Monitoring: Connection problem"
+        )
+
+        monitor_cpu_load.config(
+            text="CPU Load: Unable to retrieve"
+        )
+
+        monitor_cpu_idle.config(
+            text="CPU Idle: Unable to retrieve"
+        )
+
+        monitor_load_average.config(
+            text="Load Average: Unable to retrieve"
+        )
+
+        monitor_temperature.config(
+            text="Temperature: Unable to retrieve"
+        )
+
+        monitor_routing_engine.config(
+            text="Routing Engine: Unable to retrieve"
+        )
+
+        monitor_alarms.config(
+            text="Chassis Alarms: Unable to retrieve"
+        )
+
+
+# ============================================================
+# Schedule Live Monitoring
+# ============================================================
+
+def schedule_live_monitoring():
+
+    global refresh_job
+
+    if refresh_job is not None:
+
+        try:
+
+            window.after_cancel(
+                refresh_job
+            )
+
+        except Exception:
+
+            pass
+
+        refresh_job = None
+
+    if connection is None:
+
+        return
+
+    refresh_job = window.after(
+        refresh_seconds * 1000,
+        run_scheduled_monitoring
+    )
+
+
+# ============================================================
+# Scheduled Monitoring
+# ============================================================
+
+def run_scheduled_monitoring():
+
+    global refresh_job
+
+    refresh_job = None
+
+    if connection is None or current_switch is None:
+
+        return
+
+    update_live_monitor()
+
+    schedule_live_monitoring()
+
+
+# ============================================================
+# Countdown
+# ============================================================
+
+def update_countdown():
+
+    global refresh_countdown_job
+    global remaining_refresh_seconds
+
+    if connection is None:
+
+        monitor_countdown.config(
+            text="Next Refresh: -"
+        )
+
+        return
+
+    monitor_countdown.config(
+        text=(
+            f"Next Refresh: "
+            f"{remaining_refresh_seconds} sec"
+        )
+    )
+
+    if remaining_refresh_seconds > 0:
+
+        remaining_refresh_seconds -= 1
+
+        refresh_countdown_job = window.after(
+            1000,
+            update_countdown
+        )
+
+
+# ============================================================
+# Stop Live Monitoring
+# ============================================================
+
+def stop_live_monitoring():
+
+    global refresh_job
+    global refresh_countdown_job
+
+    if refresh_job is not None:
+
+        try:
+
+            window.after_cancel(
+                refresh_job
+            )
+
+        except Exception:
+
+            pass
+
+        refresh_job = None
+
+    if refresh_countdown_job is not None:
+
+        try:
+
+            window.after_cancel(
+                refresh_countdown_job
+            )
+
+        except Exception:
+
+            pass
+
+        refresh_countdown_job = None
+
+    monitor_status.config(
+        text="Monitoring: Stopped"
+    )
+
+    monitor_countdown.config(
+        text="Next Refresh: -"
+    )
+
+
+# ============================================================
+# Start Live Monitoring
+# ============================================================
+
+def start_live_monitoring():
+
+    global remaining_refresh_seconds
+
+    stop_live_monitoring()
+
+    remaining_refresh_seconds = (
+        refresh_seconds
+    )
+
+    update_live_monitor()
+
+    schedule_live_monitoring()
+
+
+# ============================================================
+# Change Refresh Interval
+# ============================================================
+
+def apply_refresh_interval():
+
+    global refresh_seconds
+    global remaining_refresh_seconds
+
+    value = refresh_interval_entry.get().strip()
+
+    if value == "":
+
+        messagebox.showwarning(
+            "Refresh Interval",
+            "Please enter the number of seconds."
+        )
+
+        return
+
+    try:
+
+        seconds = int(value)
+
+    except ValueError:
+
+        messagebox.showwarning(
+            "Refresh Interval",
+            "Please enter a valid whole number."
+        )
+
+        return
+
+    if seconds < 5:
+
+        messagebox.showwarning(
+            "Refresh Interval",
+            "Please use at least 5 seconds."
+        )
+
+        return
+
+    refresh_seconds = seconds
+
+    remaining_refresh_seconds = (
+        refresh_seconds
+    )
+
+    if connection is not None:
+
+        start_live_monitoring()
+
+    else:
+
+        monitor_countdown.config(
+            text=(
+                f"Next Refresh: "
+                f"{refresh_seconds} sec"
+            )
+        )
+
+    monitor_status.config(
+        text=(
+            f"Monitoring interval: "
+            f"{refresh_seconds} seconds"
+        )
+    )
+
+
+# ============================================================
+# Update Basic Dashboard
 # ============================================================
 
 def update_dashboard():
@@ -178,10 +1377,6 @@ def update_dashboard():
             "show system uptime"
         )
 
-        # ----------------------------------------------------
-        # Find Junos Version
-        # ----------------------------------------------------
-
         junos_version = "-"
 
         for line in version_output.splitlines():
@@ -194,10 +1389,6 @@ def update_dashboard():
 
                 break
 
-        # ----------------------------------------------------
-        # Find Model
-        # ----------------------------------------------------
-
         model = "-"
 
         for line in version_output.splitlines():
@@ -209,10 +1400,6 @@ def update_dashboard():
                 )[1].strip()
 
                 break
-
-        # ----------------------------------------------------
-        # Find Uptime
-        # ----------------------------------------------------
 
         uptime = "-"
 
@@ -229,10 +1416,6 @@ def update_dashboard():
                 uptime = line.strip()
 
                 break
-
-        # ----------------------------------------------------
-        # Update Dashboard
-        # ----------------------------------------------------
 
         dashboard_hostname.config(
             text=f"Hostname: {hostname}"
@@ -290,6 +1473,8 @@ def disconnect_from_switch():
     global connection
     global current_switch
 
+    stop_live_monitoring()
+
     if connection is not None:
 
         try:
@@ -343,10 +1528,15 @@ def connect_to_selected_switch():
 
     hostname = selected_switch["hostname"]
     ip = selected_switch["ip"]
-    password = selected_switch["password"]
 
     # --------------------------------------------------------
-    # Disconnect Previous Switch
+    # Stop previous monitoring
+    # --------------------------------------------------------
+
+    stop_live_monitoring()
+
+    # --------------------------------------------------------
+    # Disconnect previous connection
     # --------------------------------------------------------
 
     if connection is not None:
@@ -366,7 +1556,7 @@ def connect_to_selected_switch():
         clear_dashboard()
 
     # --------------------------------------------------------
-    # Show Connecting Status
+    # Show connecting status
     # --------------------------------------------------------
 
     status_label.config(
@@ -393,18 +1583,54 @@ def connect_to_selected_switch():
     output.insert(
         tk.END,
         f"Connecting to {hostname}...\n"
-        f"IP Address: {ip}\n"
+        f"IP Address: {ip}\n\n"
     )
 
     window.update()
 
+    # ========================================================
+    # Determine Credentials
+    # ========================================================
+
+    if active_login_profile is not None:
+
+        username = active_login_profile["username"]
+
+        prefix = active_login_profile["prefix"]
+
+        password = generate_profile_password(
+            selected_switch,
+            prefix
+        )
+
+        credential_mode = "Login Profile"
+
+    else:
+
+        username = "admin"
+
+        password = selected_switch["password"]
+
+        credential_mode = "Stored Admin Credentials"
+
     # --------------------------------------------------------
-    # Credentials
+    # Do NOT display generated password
     # --------------------------------------------------------
 
-    username = "admin"
+    output.insert(
+        tk.END,
+        f"Credential Mode: {credential_mode}\n"
+        f"Username: {username}\n\n"
+        "Authenticating...\n"
+    )
 
-    switch = {
+    window.update()
+
+    # ========================================================
+    # Netmiko Device
+    # ========================================================
+
+    device = {
         "device_type": "juniper_junos",
         "host": ip,
         "username": username,
@@ -412,13 +1638,15 @@ def connect_to_selected_switch():
         "allow_agent": False
     }
 
-    # --------------------------------------------------------
+    # ========================================================
     # Connect
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
 
-        connection = ConnectHandler(**switch)
+        connection = ConnectHandler(
+            **device
+        )
 
         current_switch = selected_switch
 
@@ -437,10 +1665,14 @@ def connect_to_selected_switch():
 
         output.insert(
             tk.END,
-            f"Connected successfully!\n\n"
+            "Connected successfully!\n\n"
             f"Hostname: {hostname}\n"
             f"IP Address: {ip}\n"
+            f"Username: {username}\n"
+            f"Credential Mode: {credential_mode}\n"
         )
+
+        start_live_monitoring()
 
     except Exception as error:
 
@@ -448,6 +1680,7 @@ def connect_to_selected_switch():
         current_switch = None
 
         disable_command_buttons()
+        stop_live_monitoring()
         clear_dashboard()
 
         status_label.config(
@@ -462,7 +1695,9 @@ def connect_to_selected_switch():
         output.insert(
             tk.END,
             f"Could not connect to {hostname}\n\n"
-            f"IP Address: {ip}\n\n"
+            f"IP Address: {ip}\n"
+            f"Username: {username}\n"
+            f"Credential Mode: {credential_mode}\n\n"
             f"Error:\n{error}"
         )
 
@@ -544,26 +1779,22 @@ def ask_status_filter(title):
         pady=15
     )
 
-    ok_button = tk.Button(
+    tk.Button(
         button_frame,
         text="OK",
         width=10,
         command=confirm
-    )
-
-    ok_button.pack(
+    ).pack(
         side="left",
         padx=5
     )
 
-    cancel_button = tk.Button(
+    tk.Button(
         button_frame,
         text="Cancel",
         width=10,
         command=cancel
-    )
-
-    cancel_button.pack(
+    ).pack(
         side="left",
         padx=5
     )
@@ -669,10 +1900,6 @@ def show_interfaces():
             "show interfaces terse"
         )
 
-        # ----------------------------------------------------
-        # Show All
-        # ----------------------------------------------------
-
         if selected_filter == "All":
 
             output.delete(
@@ -686,10 +1913,6 @@ def show_interfaces():
             )
 
             return
-
-        # ----------------------------------------------------
-        # Filter Interfaces
-        # ----------------------------------------------------
 
         filtered_lines = []
 
@@ -719,29 +1942,17 @@ def show_interfaces():
                 and link_status == "up"
             )
 
-            # ------------------------------------------------
-            # UP
-            # ------------------------------------------------
-
             if selected_filter == "Up":
 
                 if is_up:
 
                     filtered_lines.append(line)
 
-            # ------------------------------------------------
-            # DOWN
-            # ------------------------------------------------
-
             elif selected_filter == "Down":
 
                 if not is_up:
 
                     filtered_lines.append(line)
-
-        # ----------------------------------------------------
-        # Display
-        # ----------------------------------------------------
 
         output.delete(
             "1.0",
@@ -797,10 +2008,6 @@ def show_vlans():
             "show vlans"
         )
 
-        # ----------------------------------------------------
-        # Show All
-        # ----------------------------------------------------
-
         if selected_filter == "All":
 
             output.delete(
@@ -814,10 +2021,6 @@ def show_vlans():
             )
 
             return
-
-        # ----------------------------------------------------
-        # Get Interface Status
-        # ----------------------------------------------------
 
         interface_result, interface_status = (
             get_interface_status()
@@ -833,10 +2036,6 @@ def show_vlans():
         for line in lines:
 
             stripped = line.strip()
-
-            # ------------------------------------------------
-            # Header
-            # ------------------------------------------------
 
             if (
                 stripped.startswith("Routing instance")
@@ -859,10 +2058,6 @@ def show_vlans():
 
                 continue
 
-            # ------------------------------------------------
-            # Empty Line
-            # ------------------------------------------------
-
             if stripped == "":
 
                 if current_block:
@@ -872,10 +2067,6 @@ def show_vlans():
                 continue
 
             parts = stripped.split()
-
-            # ------------------------------------------------
-            # Detect Interface
-            # ------------------------------------------------
 
             interface_name = None
 
@@ -893,10 +2084,6 @@ def show_vlans():
 
                     break
 
-            # ------------------------------------------------
-            # Interface Line
-            # ------------------------------------------------
-
             if interface_name is not None:
 
                 if current_block:
@@ -908,10 +2095,6 @@ def show_vlans():
                     )
 
                 continue
-
-            # ------------------------------------------------
-            # New VLAN
-            # ------------------------------------------------
 
             if len(parts) >= 2:
 
@@ -929,17 +2112,9 @@ def show_vlans():
 
                 continue
 
-            # ------------------------------------------------
-            # Other Line
-            # ------------------------------------------------
-
             if current_block:
 
                 current_block.append(line)
-
-        # ----------------------------------------------------
-        # Add Last VLAN
-        # ----------------------------------------------------
 
         if current_block:
 
@@ -949,10 +2124,6 @@ def show_vlans():
                     current_interfaces
                 )
             )
-
-        # ----------------------------------------------------
-        # Filter VLANs
-        # ----------------------------------------------------
 
         filtered_output = []
 
@@ -972,10 +2143,6 @@ def show_vlans():
                     )
 
                 continue
-
-            # ------------------------------------------------
-            # Determine VLAN Status
-            # ------------------------------------------------
 
             up_interfaces = []
             known_interfaces = []
@@ -1023,10 +2190,6 @@ def show_vlans():
                 and len(up_interfaces) == 0
             )
 
-            # ------------------------------------------------
-            # UP
-            # ------------------------------------------------
-
             if selected_filter == "Up":
 
                 if vlan_is_up:
@@ -1035,10 +2198,6 @@ def show_vlans():
                         block
                     )
 
-            # ------------------------------------------------
-            # DOWN
-            # ------------------------------------------------
-
             elif selected_filter == "Down":
 
                 if vlan_is_down:
@@ -1046,10 +2205,6 @@ def show_vlans():
                     filtered_output.extend(
                         block
                     )
-
-        # ----------------------------------------------------
-        # Display
-        # ----------------------------------------------------
 
         output.delete(
             "1.0",
@@ -1225,7 +2380,7 @@ def run_custom_command():
 
 
 # ============================================================
-# When User Selects Another Switch
+# Switch Selection
 # ============================================================
 
 def switch_selected(event=None):
@@ -1252,7 +2407,12 @@ window.title(
 )
 
 window.geometry(
-    "900x850"
+    "1250x900"
+)
+
+window.minsize(
+    1100,
+    800
 )
 
 
@@ -1267,7 +2427,7 @@ title = tk.Label(
 )
 
 title.pack(
-    pady=15
+    pady=12
 )
 
 
@@ -1275,8 +2435,11 @@ title.pack(
 # Authentication Key
 # ============================================================
 
-authentication_frame = tk.Frame(
-    window
+authentication_frame = tk.LabelFrame(
+    window,
+    text="Switch Password Management",
+    padx=10,
+    pady=8
 )
 
 authentication_frame.pack(
@@ -1325,6 +2488,113 @@ update_key_button.pack(
 
 
 # ============================================================
+# Login Profile
+# ============================================================
+
+login_profile_frame = tk.LabelFrame(
+    window,
+    text="Login Profile",
+    padx=10,
+    pady=8
+)
+
+login_profile_frame.pack(
+    pady=5
+)
+
+
+login_username_label = tk.Label(
+    login_profile_frame,
+    text="Username:",
+    font=("Arial", 11)
+)
+
+login_username_label.pack(
+    side="left",
+    padx=5
+)
+
+
+login_username_entry = tk.Entry(
+    login_profile_frame,
+    width=15
+)
+
+login_username_entry.insert(
+    0,
+    "nour"
+)
+
+login_username_entry.pack(
+    side="left",
+    padx=5
+)
+
+
+login_prefix_label = tk.Label(
+    login_profile_frame,
+    text="Password Prefix:",
+    font=("Arial", 11)
+)
+
+login_prefix_label.pack(
+    side="left",
+    padx=5
+)
+
+
+login_prefix_entry = tk.Entry(
+    login_profile_frame,
+    width=15
+)
+
+login_prefix_entry.insert(
+    0,
+    "Nour-"
+)
+
+login_prefix_entry.pack(
+    side="left",
+    padx=5
+)
+
+
+use_profile_button = tk.Button(
+    login_profile_frame,
+    text="Use Login Profile",
+    command=use_login_profile
+)
+
+use_profile_button.pack(
+    side="left",
+    padx=5
+)
+
+
+disable_profile_button = tk.Button(
+    login_profile_frame,
+    text="Disable",
+    command=disable_login_profile
+)
+
+disable_profile_button.pack(
+    side="left",
+    padx=5
+)
+
+
+login_profile_status = tk.Label(
+    window,
+    text="Login Profile: Disabled",
+    font=("Arial", 10)
+)
+
+login_profile_status.pack(
+    pady=3
+)
+
+
+# ============================================================
 # Switch Selection
 # ============================================================
 
@@ -1333,7 +2603,7 @@ selection_frame = tk.Frame(
 )
 
 selection_frame.pack(
-    pady=10
+    pady=8
 )
 
 
@@ -1383,7 +2653,7 @@ disconnect_button = tk.Button(
 )
 
 disconnect_button.pack(
-    pady=8
+    pady=5
 )
 
 
@@ -1398,7 +2668,39 @@ status_label = tk.Label(
 )
 
 status_label.pack(
-    pady=8
+    pady=5
+)
+
+
+# ============================================================
+# Main Content Area
+# ============================================================
+
+main_content_frame = tk.Frame(
+    window
+)
+
+main_content_frame.pack(
+    fill="both",
+    expand=True,
+    padx=15,
+    pady=5
+)
+
+
+# ============================================================
+# LEFT SIDE
+# ============================================================
+
+left_frame = tk.Frame(
+    main_content_frame
+)
+
+left_frame.pack(
+    side="left",
+    fill="both",
+    expand=True,
+    padx=(0, 10)
 )
 
 
@@ -1407,16 +2709,15 @@ status_label.pack(
 # ============================================================
 
 dashboard_frame = tk.LabelFrame(
-    window,
-    text="Switch Dashboard",
+    left_frame,
+    text="Switch Information",
     padx=15,
     pady=10
 )
 
 dashboard_frame.pack(
     fill="x",
-    padx=20,
-    pady=10
+    pady=5
 )
 
 
@@ -1493,21 +2794,17 @@ dashboard_uptime.pack(
 
 
 # ============================================================
-# Basic Commands Frame
+# Basic Commands
 # ============================================================
 
 commands_frame = tk.Frame(
-    window
+    left_frame
 )
 
 commands_frame.pack(
     pady=5
 )
 
-
-# ============================================================
-# Show Version
-# ============================================================
 
 version_button = tk.Button(
     commands_frame,
@@ -1525,10 +2822,6 @@ version_button.grid(
 )
 
 
-# ============================================================
-# Show Interfaces
-# ============================================================
-
 interfaces_button = tk.Button(
     commands_frame,
     text="Show Interfaces",
@@ -1544,10 +2837,6 @@ interfaces_button.grid(
     pady=5
 )
 
-
-# ============================================================
-# Show VLANs
-# ============================================================
 
 vlans_button = tk.Button(
     commands_frame,
@@ -1565,10 +2854,6 @@ vlans_button.grid(
 )
 
 
-# ============================================================
-# Show Logs
-# ============================================================
-
 logs_button = tk.Button(
     commands_frame,
     text="Show Logs",
@@ -1584,10 +2869,6 @@ logs_button.grid(
     pady=5
 )
 
-
-# ============================================================
-# Restart
-# ============================================================
 
 restart_button = tk.Button(
     commands_frame,
@@ -1610,7 +2891,7 @@ restart_button.grid(
 # ============================================================
 
 command_label = tk.Label(
-    window,
+    left_frame,
     text="Custom Junos Command:",
     font=("Arial", 11)
 )
@@ -1620,9 +2901,27 @@ command_label.pack(
 )
 
 
-command_entry = tk.Entry(
-    window,
-    width=65
+command_suggestions = [
+    "show version",
+    "show system uptime",
+    "show chassis routing-engine",
+    "show chassis environment",
+    "show chassis alarms",
+    "show interfaces terse",
+    "show interfaces extensive",
+    "show vlans",
+    "show ethernet-switching table",
+    "show route",
+    "show arp",
+    "show log messages | last 20",
+    "show system processes extensive"
+]
+
+
+command_entry = ttk.Combobox(
+    left_frame,
+    width=65,
+    values=command_suggestions
 )
 
 command_entry.pack(
@@ -1631,7 +2930,7 @@ command_entry.pack(
 
 
 run_command_button = tk.Button(
-    window,
+    left_frame,
     text="Run Command",
     width=22,
     command=run_custom_command,
@@ -1648,7 +2947,7 @@ run_command_button.pack(
 # ============================================================
 
 output_label = tk.Label(
-    window,
+    left_frame,
     text="Command Output:",
     font=("Arial", 11)
 )
@@ -1659,14 +2958,273 @@ output_label.pack(
 
 
 output = tk.Text(
-    window,
-    width=105,
+    left_frame,
+    width=75,
     height=15
 )
 
 output.pack(
+    fill="both",
+    expand=True,
     pady=5
 )
+
+
+# ============================================================
+# RIGHT SIDE - LIVE MONITORING
+# ============================================================
+
+right_frame = tk.Frame(
+    main_content_frame,
+    width=360
+)
+
+right_frame.pack(
+    side="right",
+    fill="y",
+    padx=(10, 0)
+)
+
+right_frame.pack_propagate(
+    False
+)
+
+
+# ============================================================
+# Live Monitoring Frame
+# ============================================================
+
+monitor_frame = tk.LabelFrame(
+    right_frame,
+    text="Live Switch Monitoring",
+    padx=15,
+    pady=15
+)
+
+monitor_frame.pack(
+    fill="both",
+    expand=True
+)
+
+
+monitor_status = tk.Label(
+    monitor_frame,
+    text="Monitoring: Stopped",
+    anchor="w",
+    font=("Arial", 11, "bold")
+)
+
+monitor_status.pack(
+    fill="x",
+    pady=(0, 15)
+)
+
+
+monitor_cpu_load = tk.Label(
+    monitor_frame,
+    text="CPU Load: -",
+    anchor="w",
+    font=("Arial", 11)
+)
+
+monitor_cpu_load.pack(
+    fill="x",
+    pady=5
+)
+
+
+monitor_cpu_idle = tk.Label(
+    monitor_frame,
+    text="CPU Idle: -",
+    anchor="w",
+    font=("Arial", 11)
+)
+
+monitor_cpu_idle.pack(
+    fill="x",
+    pady=5
+)
+
+
+monitor_load_average = tk.Label(
+    monitor_frame,
+    text="Load Average: -",
+    anchor="w",
+    font=("Arial", 11)
+)
+
+monitor_load_average.pack(
+    fill="x",
+    pady=5
+)
+
+
+monitor_temperature = tk.Label(
+    monitor_frame,
+    text="Temperature: -",
+    anchor="w",
+    font=("Arial", 11)
+)
+
+monitor_temperature.pack(
+    fill="x",
+    pady=5
+)
+
+
+monitor_routing_engine = tk.Label(
+    monitor_frame,
+    text="Routing Engine: -",
+    anchor="w",
+    font=("Arial", 11)
+)
+
+monitor_routing_engine.pack(
+    fill="x",
+    pady=5
+)
+
+
+monitor_alarms = tk.Label(
+    monitor_frame,
+    text="Chassis Alarms: -",
+    anchor="w",
+    font=("Arial", 11)
+)
+
+monitor_alarms.pack(
+    fill="x",
+    pady=5
+)
+
+
+separator = ttk.Separator(
+    monitor_frame,
+    orient="horizontal"
+)
+
+separator.pack(
+    fill="x",
+    pady=15
+)
+
+
+# ============================================================
+# Refresh Interval
+# ============================================================
+
+refresh_title = tk.Label(
+    monitor_frame,
+    text="Monitoring Refresh Interval",
+    anchor="w",
+    font=("Arial", 10, "bold")
+)
+
+refresh_title.pack(
+    fill="x",
+    pady=(0, 5)
+)
+
+
+refresh_interval_frame = tk.Frame(
+    monitor_frame
+)
+
+refresh_interval_frame.pack(
+    fill="x",
+    pady=5
+)
+
+
+refresh_interval_label = tk.Label(
+    refresh_interval_frame,
+    text="Every:",
+    font=("Arial", 10)
+)
+
+refresh_interval_label.pack(
+    side="left"
+)
+
+
+refresh_interval_entry = tk.Entry(
+    refresh_interval_frame,
+    width=8
+)
+
+refresh_interval_entry.insert(
+    0,
+    str(DEFAULT_REFRESH_SECONDS)
+)
+
+refresh_interval_entry.pack(
+    side="left",
+    padx=5
+)
+
+
+seconds_label = tk.Label(
+    refresh_interval_frame,
+    text="seconds"
+)
+
+seconds_label.pack(
+    side="left"
+)
+
+
+apply_refresh_button = tk.Button(
+    refresh_interval_frame,
+    text="Apply",
+    width=8,
+    command=apply_refresh_interval
+)
+
+apply_refresh_button.pack(
+    side="left",
+    padx=8
+)
+
+
+# ============================================================
+# Last Update
+# ============================================================
+
+monitor_last_update = tk.Label(
+    monitor_frame,
+    text="Last Update: -",
+    anchor="w",
+    font=("Arial", 10)
+)
+
+monitor_last_update.pack(
+    fill="x",
+    pady=(15, 5)
+)
+
+
+# ============================================================
+# Countdown
+# ============================================================
+
+monitor_countdown = tk.Label(
+    monitor_frame,
+    text="Next Refresh: -",
+    anchor="w",
+    font=("Arial", 10)
+)
+
+monitor_countdown.pack(
+    fill="x",
+    pady=5
+)
+
+
+# ============================================================
+# Initialize Dashboard
+# ============================================================
+
+clear_dashboard()
 
 
 # ============================================================
